@@ -980,7 +980,6 @@ public:
     // kWidth is 16 for fp4.
     const unsigned kWidth = kBase;
     assert(kWidth == 32);
-    using basisT = std::vector<std::vector<int32_t>>;
 
     auto aShape = a.getType().getShape();
     auto bShape = b.getType().getShape();
@@ -1178,8 +1177,6 @@ public:
 
     auto order = ttg::getMatrixOrder(rank, /*rowMajor=*/true);
     auto standardOutDims = standardOutDimNames(ctx, rank);
-
-    using basisT = std::vector<std::vector<int32_t>>;
 
     RankedTensorType aType = a.getType();
     RankedTensorType bType = b.getType();
@@ -1383,9 +1380,6 @@ FailureOr<WmmaIntrinsic> chooseWmmaInstruction(Location loc, int wmmaVersion,
   // number of matrix elements along k dim per one WMMA instruction
   unsigned kDim = 0;
 
-  auto resShape = cType.getShape();
-  auto rank = resShape.size();
-
   unsigned mDim = 16;
   unsigned nDim = 16;
 
@@ -1504,11 +1498,11 @@ public:
     auto newAcc =
         convertAndCastTensor(rewriter, oldAcc, wmmaEnc, operandTypes[2]);
 
-    // deduce `kWidth` - the number of consecutive elements along K dimension
-    // for a lane. This is derived it from `kBase` - i.e., the number of
-    // elements along K dimension in a wmma instruction for a lane. Note, kBase
-    // can consist of a several separated groups of consecutive elements. This
-    // depends on instruction encoding
+    // deduce `kWidth` which is the number of consecutive elements along the K
+    // dimension for a lane. Derive it from `kBase` which is the number of
+    // elements along the K dimension in a WMMA instruction per lane. Note:
+    // `kBase` can consist of several separated groups of consecutive elements.
+    // This depends on the instruction encoding.
 
     // kWidth is always equals to kBase for WMMA v1/2
     auto kWidth = kBase;

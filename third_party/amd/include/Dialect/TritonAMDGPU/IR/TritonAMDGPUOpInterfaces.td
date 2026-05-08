@@ -6,15 +6,15 @@ include "mlir/IR/OpBase.td"
 def TDMOpInterface : OpInterface<"TDMOpInterface"> {
   let description = [{
     Common interface for AMD TDM (Tensor DMA) data-movement operations.
-    Mirrors NVIDIA's TMAOpInterface
   }];
 
   let cppNamespace = "::mlir::triton::amdgpu";
 
-  let methods = [InterfaceMethod<
-                     /*desc=*/"Get the tensor descriptor",
-                     /*retType=*/"::mlir::Value",
-                     /*methodName=*/"getDesc">,
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Get the tensor descriptor",
+      /*retType=*/"::mlir::Value",
+      /*methodName=*/"getDesc">
   ];
 }
 
