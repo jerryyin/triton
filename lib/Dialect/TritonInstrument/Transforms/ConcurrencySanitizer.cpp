@@ -462,7 +462,7 @@ private:
         // is writing to the same buffer.
         addWriteChecks(b, funcBuilder, op, buf, effect.length, pred, memType,
                        thread, effect.operandName, effectRecipientCTAs,
-                       /*allowNoWrite=*/false, opInfo->commitKind);
+                       opInfo->commitKind);
         if (opInfo->trackingKind == MemEffectsOpInfo::TrackingKind::Barrier) {
           funcBuilder.createSetReadVisibilityCall(
               b, buf, effect.length, getThreadPeersMask(thread), pred, memType,
@@ -481,7 +481,7 @@ private:
         // is reading or writing to the same buffer.
         addWriteChecks(b, funcBuilder, op, buf, effect.length, pred, memType,
                        thread, effect.operandName, effectRecipientCTAs,
-                       /*allowNoWrite=*/true, opInfo->commitKind);
+                       opInfo->commitKind);
         addReadChecks(b, funcBuilder, op, buf, effect.length, pred, memType,
                       thread, effect.operandName, effectRecipientCTAs,
                       opInfo->commitKind);
@@ -557,11 +557,10 @@ private:
                       tti::FunctionBuilder &funcBuilder, Operation *op,
                       Value buf, uint32_t length, Value pred, MemType memType,
                       int thread, const std::string &operandName,
-                      Value recipientCTAs, bool allowNoWrite,
+                      Value recipientCTAs,
                       CommitKind::Kind opCommitKind = CommitKind::None) {
-    funcBuilder.createVerifyWriteVisibilityCall(b, buf, length, thread,
-                                                operandName, pred, memType, op,
-                                                recipientCTAs, allowNoWrite);
+    funcBuilder.createVerifyWriteVisibilityCall(
+        b, buf, length, thread, operandName, pred, memType, op, recipientCTAs);
     // commit-num-based synchronization is only supported for shared memory
     if (memType == MemType::SHARED_MEM) {
       for (const auto &commitKindDesc :
