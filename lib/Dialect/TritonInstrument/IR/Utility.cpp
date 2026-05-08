@@ -139,9 +139,9 @@ bool hasCrossBufferAliasing(ArrayRef<BufferRegion> regions) {
   return false;
 }
 
-Value createInitStateTensor(ImplicitLocOpBuilder &b, ArrayRef<int64_t> shape,
-                            int bitWidth, int64_t initialValue,
-                            FunctionBuilder &funcBuilder) {
+Value createZeroInitStateTensor(ImplicitLocOpBuilder &b,
+                                ArrayRef<int64_t> shape, int bitWidth,
+                                FunctionBuilder &funcBuilder) {
   auto type =
       getIntTensorType(b.getInsertionBlock()->getParent(), shape, bitWidth);
   Type elType = type.getElementType();
@@ -154,7 +154,7 @@ Value createInitStateTensor(ImplicitLocOpBuilder &b, ArrayRef<int64_t> shape,
   auto alloc = createThirdPartyScratchAlloc(b, b.getLoc(), ptrType, sizeInBytes,
                                             /*alignment=*/16,
                                             /*sharedClusterState=*/true);
-  Value cstInit = arith::ConstantIntOp::create(b, initialValue, bitWidth);
+  Value cstZero = arith::ConstantIntOp::create(b, 0, bitWidth);
   Value ctaId = ExperimentalClusterCTAIdOp::create(b, b.getLoc());
   Value zero = arith::ConstantIntOp::create(b, 0, 32);
   Value isCTA0 =
@@ -169,15 +169,9 @@ Value createInitStateTensor(ImplicitLocOpBuilder &b, ArrayRef<int64_t> shape,
   cf::CondBranchOp::create(b, isCTA0, ifBlock, ValueRange{}, thenBlock,
                            ValueRange{});
   b.setInsertionPointToStart(ifBlock);
-  funcBuilder.createFillGlobalTensorCall(b, alloc, type, cstInit);
+  funcBuilder.createFillGlobalTensorCall(b, alloc, type, cstZero);
   b.setInsertionPointToStart(thenBlock);
   return alloc;
-}
-
-Value createZeroInitStateTensor(ImplicitLocOpBuilder &b,
-                                ArrayRef<int64_t> shape, int bitWidth,
-                                FunctionBuilder &funcBuilder) {
-  return createInitStateTensor(b, shape, bitWidth, 0, funcBuilder);
 }
 
 TypedValue<RankedTensorType>
@@ -397,7 +391,7 @@ Operation *createStoreScratchMemory(OpBuilder &b, Location loc, Value alloc,
                                     Value tensor, RankedTensorType tensorType,
                                     bool currentCTAOnly) {
   if (currentCTAOnly) {
-    assert(tensorType.getRank() >= 1 &&
+    assert(tensorType.getRank() >= 2 &&
            "expected currentCTAOnly tensor to have a leading CTA dimension");
     int64_t numCTAs = lookupNumCTAs(b);
     assert(tensorType.getShape()[0] == numCTAs &&
@@ -550,12 +544,6 @@ void AuxDataMap::populateAndPassToWarpSpecialize(
         {createZeroInitStateTensor(b, {numCTAs, numBarriers}, 32, fb),
          getIntTensorType(entryRegion, {numCTAs, numBarriers}, 32)});
     passToWarpSpecialize(entryPoint, waiting.at(entryRegion), waiting,
-                         captureCounter);
-
-    activeMasks.insert(entryRegion,
-                       {createInitStateTensor(b, {numCTAs}, 32, 1, fb),
-                        getIntTensorType(entryRegion, {numCTAs}, 32)});
-    passToWarpSpecialize(entryPoint, activeMasks.at(entryRegion), activeMasks,
                          captureCounter);
 
     barrierWriteRecipients.insert(
@@ -713,7 +701,7 @@ void AuxDataMap::createInWarpSpecialize(
     FuncOp func, RegionToValueMap &map,
     std::function<ValueType(ImplicitLocOpBuilder &)> createFn) {
   func.walk([&](WarpSpecializeOp op) {
-    for (Region *region : op.getNonEmptyPartitionRegions()) {
+    for (Region *region : op.getPartitionRegions()) {
       ImplicitLocOpBuilder b(region->getLoc(), region);
       b.setInsertionPointToStart(&region->getBlocks().front());
       map.insert(region, createFn(b));
