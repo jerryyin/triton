@@ -463,7 +463,7 @@ void init_triton_amd(py::module &&m) {
         std::unique_ptr<llvm::MCSubtargetInfo> sti(
             target->createMCSubtargetInfo(triple, arch, features));
 
-        llvm::MCContext ctx(triple, *mai, mri.get(), sti.get(), &srcMgr);
+        llvm::MCContext ctx(triple, *mai, *mri, *sti, &srcMgr);
         std::unique_ptr<llvm::MCObjectFileInfo> mofi(
             target->createMCObjectFileInfo(ctx, /*PIC=*/false,
                                            /*LargeCodeModel=*/false));
