@@ -50,25 +50,31 @@ AQLPLAY({},
 
 
 def generate_group_file(names: list[str], num_xcc: int, group_name: str, enable_itrace: bool = False,
-                        enable_ttrace: bool = False):
+                        enable_ttrace: bool = False, disable_partition_conflict_detection: bool = False,
+                        load_mem_from_gl2: bool = False, allow_gpr_read_before_write: bool = False):
     pm4p2_args = [
         "make_mi400_16cu_2se_1xcc_cu_cache_l0_64k_lds_320k",  #
         "gfx11_pktplay_base_settings",  #
         "monitors.counters.perf.en_level=2",  #
         "monitors.counters.perf.dump_freq=1000",  #
-        "test.force_flush_end_of_cb=true",  #
         "model.gpu.compute_only_model=true",  #
-        "monitors.counters.perf.config_file=$ANCHOR_gfxperf/build/rhel7/perfmon/mi400_perfmon.yml",  #
-        "monitors.counters.perf.config_file2=$STEM/gc/src/am/config/counters/mi400_miperf.yml",  #
-        "model.gpu.sh.sa.tex.tcp.tcp_clause_enable=clause",  #
-        "model.enable_multipipe=true",  #
+        "monitors.counters.perf.config_file=$ANCHOR_gfxperf/build/rhel7/perfmon/mi400_perfmon.yml",
+        "monitors.counters.perf.config_file2=$STEM/gc/src/am/config/counters/mi400_miperf.yml",
         "make_mi400_xcd_ml_B0",  #
-        "make_mi400_1XCC_umc_const_delay_rd_320_wr_64_capped_hbm4_2p5kw_bw"
+        "model.gpu.use_hw_registers=true"
     ]
+
+    if disable_partition_conflict_detection:
+        pm4p2_args.append("model.gpu.sh.sa.tex.tcp.cu_cache_enable_partition_conflict_check=false")
+
+    if allow_gpr_read_before_write:
+        pm4p2_args.append("model.gpu.sh.AllowGprReadBeforeWrite=true")
+
+    if load_mem_from_gl2:
+        pm4p2_args.append("make_mi400_glx_l3_loopback")
 
     if num_xcc == 8:
         pm4p2_args[0] = "make_mi400_16cu_2se_8xcc_8cp_cu_cache_l0_64k_lds_320k"
-        pm4p2_args[-1] = "make_mi400_8XCC_umc_const_delay_rd_320_wr_64_capped_hbm4_2p5kw_bw"
 
     test_args = ["-use_kmd=1", "-tc_BindAqlProcess=1", "-tc_EnableHIQ=0", "-tc_LoadMesUCode=1"]
     if num_xcc == 8:
@@ -83,8 +89,8 @@ def generate_group_file(names: list[str], num_xcc: int, group_name: str, enable_
         args.insert(0, '--itrace on')
     if enable_ttrace:
         args.insert(0, '--ttrace')
-    group_file = '''group mi400am_1CP_1xcc_UMC_Loopback_cpfw {}
-    group {} --pm4p2-args-end="make_mi450_gclk1p7_gl2clk1p7"'''.format(' '.join(args), group_name)
+    group_file = '''group mi400am_1CP_1XCC_AMBFM {}
+    group {} --pm4p2-args-end="make_mi450_gclk1p4_gl2clk1p5"'''.format(' '.join(args), group_name)
     for name in names:
         body = '''
         {}_cap {{"lsf-machine" : "select[type==local && (gb128||csbatch)] rusage[mem=32000]"}}'''.format(name)
@@ -96,7 +102,9 @@ def main(args):
     if len(args.output_dir) > 0:
         os.makedirs(args.output_dir, exist_ok=True)
 
-    group_file = generate_group_file(args.names, args.num_xcc, args.group_name, args.enable_itrace, args.enable_ttrace)
+    group_file = generate_group_file(args.names, args.num_xcc, args.group_name, args.enable_itrace, args.enable_ttrace,
+                                     args.disable_partition_conflict_detection, args.load_mem_from_gl2,
+                                     args.allow_gpr_read_before_write)
     aqlplay_file = generate_aqlplay(args.names, args.capfile_root)
 
     with open(os.path.join(args.output_dir, 'group_file.txt'), 'w', encoding='utf-8', newline='\n') as f:
@@ -123,5 +131,9 @@ if __name__ == '__main__':
     parser.add_argument('-it', '--enable_itrace', action='store_true', help='Enable itrace or not')
     parser.add_argument('-tt', '--enable_ttrace', action='store_true', help='Enable ttrace or not')
     parser.add_argument('--num_xcc', type=int, choices=[1, 8], help='Number of XCCs')
+    parser.add_argument('--disable-partition-conflict-detection', action='store_true',
+                        help='Disable partition conflict detection')
+    parser.add_argument('--load-mem-from-gl2', action='store_true', help='Load memory from GL2 instead of HBM')
+    parser.add_argument('--allow-gpr-read-before-write', action='store_true', help='Allow GPR read before write')
     args = parser.parse_args()
     main(args)
