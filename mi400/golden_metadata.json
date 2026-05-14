@@ -1,11 +1,11 @@
 {
   "mxfp_attn_fwd_block_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128_BM128_BN128_WARPS4": {
-    "sgpr_count": 90,
+    "sgpr_count": 86,
     "sgpr_spill_count": 0,
     "vgpr_count": 722,
     "vgpr_spill_count": 0,
     "scratch_size": 0,
-    "code_len_in_byte": 18296,
+    "code_len_in_byte": 18304,
     "occupancy": 1
   },
   "mxfp_attn_fwd_global_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128_BM128_BN128_WARPS4": {
@@ -14,25 +14,25 @@
     "vgpr_count": 757,
     "vgpr_spill_count": 0,
     "scratch_size": 0,
-    "code_len_in_byte": 17632,
+    "code_len_in_byte": 17680,
     "occupancy": 1
   },
   "mxfp_attn_fwd_block_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128_BM256_BN128_WARPS4": {
     "sgpr_count": 94,
     "sgpr_spill_count": 0,
-    "vgpr_count": 1014,
+    "vgpr_count": 1022,
     "vgpr_spill_count": 0,
     "scratch_size": 0,
-    "code_len_in_byte": 33400,
+    "code_len_in_byte": 33496,
     "occupancy": 1
   },
   "mxfp_attn_fwd_global_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128_BM256_BN128_WARPS4": {
     "sgpr_count": 66,
     "sgpr_spill_count": 0,
-    "vgpr_count": 942,
+    "vgpr_count": 943,
     "vgpr_spill_count": 0,
     "scratch_size": 0,
-    "code_len_in_byte": 32452,
+    "code_len_in_byte": 32344,
     "occupancy": 1
   },
   "mxfp_attn_fwd_block_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128_BM128_BN128_WARPS8": {
@@ -41,7 +41,7 @@
     "vgpr_count": 359,
     "vgpr_spill_count": 0,
     "scratch_size": 0,
-    "code_len_in_byte": 11376,
+    "code_len_in_byte": 11408,
     "occupancy": 2
   },
   "mxfp_attn_fwd_global_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128_BM128_BN128_WARPS8": {
@@ -50,7 +50,7 @@
     "vgpr_count": 348,
     "vgpr_spill_count": 0,
     "scratch_size": 0,
-    "code_len_in_byte": 10632,
+    "code_len_in_byte": 10676,
     "occupancy": 2
   },
   "BATCH8_SEQLENQ512_SEQLENK512_QHEADS8_KVHEADS8_HEADSZ128_BM128_BN64_f16_attn_fwd_pipelined_kernel": {
