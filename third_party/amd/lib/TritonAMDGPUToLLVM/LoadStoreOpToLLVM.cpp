@@ -983,20 +983,19 @@ struct AsyncCopyGlobalToLocalOpConversion
       // Predicate load based on threadPred && swizzledMask
       auto cond = b.and_(threadPred, maybeSwizzledMaskElem);
 
-      if (targetInfo.supportsDirectToLdsScatter() ||
-          (threadPredIsWarpUniform && !hasMask)) {
-        // For architectures supporting per lane LDS addresses or if the
-        // predicate is warp-uniform, mask loads by setting the *shared* address
-        // to out of range, the HW will drop the load before fetching the data
-        // from global memory.
+      if (threadPredIsWarpUniform && !hasMask) {
+        // If the predicate is warp-uniform (and there is no per-lane mask),
+        // mask the load by setting the *shared* address to out of range; the
+        // HW will drop the load before fetching the data from global memory.
+        // NOTE: the gfx1250 supportsDirectToLdsScatter() path was intentionally
+        // not adopted here (the fork reverted PR #708).
         Value predicatedAddress =
             selectLdsAddressForPredicate(b, cond, shmemAddr);
 
         emitAsyncLoad(rewriter, loc, targetInfo, vecBits, srcElem,
                       predicatedAddress, op.getCache(), multicastMask);
       } else {
-        // For architectures not supporting per lane LDS addresses we need to
-        // emit a branch.
+        // Otherwise, emit a branch to predicate the load.
         auto [loadBlock, afterLoadBlock] = emitBranch(rewriter, loc, cond);
 
         emitAsyncLoad(rewriter, loc, targetInfo, vecBits, srcElem, shmemAddr,
