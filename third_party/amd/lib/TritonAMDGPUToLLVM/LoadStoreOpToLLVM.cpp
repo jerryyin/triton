@@ -199,6 +199,19 @@ std::pair<Block *, Block *> emitBranch(RewriterBase &rewriter, Location loc,
   return {body, after};
 }
 
+bool isRedundantThreadPredWarpUniform(
+    const llvm::MapVector<StringAttr, int32_t> &masks, MLIRContext *ctx) {
+  return masks.lookup(StringAttr::get(ctx, "lane")) == 0 &&
+         masks.lookup(StringAttr::get(ctx, "reg")) == 0;
+}
+
+Value selectLdsAddressForPredicate(TritonLLVMOpBuilder &b, Value pred,
+                                   Value shmemAddr) {
+  Value outOfRangeAddress =
+      b.inttoptr(shmemAddr.getType(), b.i32_val(0x7FFFFFFF));
+  return b.select(pred, shmemAddr, outOfRangeAddress);
+}
+
 // Contains some helper functions for both Load and Store conversions.
 struct LoadStoreConversionBase {
   explicit LoadStoreConversionBase(const AMD::TargetInfo &targetInfo,
@@ -790,16 +803,17 @@ struct BufferLoadToLocalOpConversion
     // based on the collected shared addresses and vector size
     Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr, llStride);
 
+    auto freeVarMasks = getFreeVariableMasks(ptrType);
     Value threadPred = emitRedundantThreadPredicateNonNull(
-        getFreeVariableMasks(ptrType), rewriter, loc, targetInfo);
+        freeVarMasks, rewriter, loc, targetInfo);
+    bool isThreadPredWarpUniform =
+        isRedundantThreadPredWarpUniform(freeVarMasks, rewriter.getContext());
 
-    auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
-    auto emitBufferLoadLds =
-        [this, &op, &b, &bufferEmitter, &rsrcDesc, laneId = laneId, threadPred,
-         offsetTy, otherTy, hasOther, requiresSrcPtrSwizzling](
-            RewriterBase &rewriter, Location loc, ArrayRef<Value> loadVals,
-            Value shmemAddr, int startIdx, VectorType vecTy,
-            Value multicastMask) -> SmallVector<Value> {
+    auto laneId = getLaneId(rewriter, loc);
+    auto emitBufferLoadLds = [&](RewriterBase &rewriter, Location loc,
+                                 ArrayRef<Value> loadVals, Value shmemAddr,
+                                 int startIdx, VectorType vecTy,
+                                 Value multicastMask) -> SmallVector<Value> {
       auto [offsetElem, maskElem, otherElems, swizzleLaneOffset] =
           unzipAsyncCopyValues(rewriter, loc, startIdx, loadVals, offsetTy,
                                otherTy, hasOther, vecTy.getNumElements());
@@ -812,27 +826,41 @@ struct BufferLoadToLocalOpConversion
         applySwizzling(rewriter, loc, offsetElem, maybeSwizzledMaskElem, laneId,
                        swizzleLaneOffset);
 
-      // If other=0.0 we remove other in canonicalizePointers and we can use out
-      // of bounds to store 0 to LDS. So if we have other values we need to
-      // predicate to not overwrite the other stores
-      Value cond =
-          hasOther ? b.and_(threadPred, maybeSwizzledMaskElem) : threadPred;
+      // Buffer-load-to-local supports zero-fill for per-lane masks by adjusting
+      // the src offset to be OOB. Redundant-thread predication still needs a
+      // branch when there are other values, otherwise inactive threads
+      // zero-fill values loaded by active lanes from another warp.
+      // Optimization: for warp-uniform thread predicates and no other values we
+      // can avoid the branch by selecting an out-of-range *shared* address. The
+      // HW will drop the load before fetching the data from global memory so we
+      // will not overwrite values.
+      if (isThreadPredWarpUniform && !hasOther) {
+        Value predicatedAddress =
+            selectLdsAddressForPredicate(b, threadPred, shmemAddr);
+        auto bufferLoadToLds = bufferEmitter.emitLoadToLds(
+            vecTy, vecBytesVal, rsrcDesc, offsetElem, predicatedAddress,
+            maybeSwizzledMaskElem, op.getCache());
+        if (targetInfo.requiresAliasInfoForAsyncOps())
+          AMD::addAsyncCopyAliasScope(bufferLoadToLds);
+      } else {
+        Value pred =
+            hasOther ? b.and_(threadPred, maybeSwizzledMaskElem) : threadPred;
+        auto [loadBlock, afterLoadBlock] = emitBranch(rewriter, loc, pred);
 
-      auto [loadBlock, afterLoadBlock] = emitBranch(rewriter, loc, cond);
+        auto bufferLoadToLds = bufferEmitter.emitLoadToLds(
+            vecTy, vecBytesVal, rsrcDesc, offsetElem, shmemAddr,
+            hasOther ? b.true_val() : maybeSwizzledMaskElem, op.getCache());
+        if (targetInfo.requiresAliasInfoForAsyncOps())
+          AMD::addAsyncCopyAliasScope(bufferLoadToLds);
 
-      auto bufferLoadToLds = bufferEmitter.emitLoadToLds(
-          vecTy, vecBytesVal, rsrcDesc, offsetElem, shmemAddr,
-          hasOther ? b.true_val() : maybeSwizzledMaskElem, op.getCache());
-      if (targetInfo.requiresAliasInfoForAsyncOps())
-        AMD::addAsyncCopyAliasScope(bufferLoadToLds);
+        if (hasOther) {
+          emitOtherStore(rewriter, loc, this->getTypeConverter(), vecTy,
+                         maskElem, otherElems, shmemAddr, laneId,
+                         requiresSrcPtrSwizzling, swizzleLaneOffset);
+        }
 
-      if (hasOther) {
-        emitOtherStore(rewriter, loc, this->getTypeConverter(), vecTy, maskElem,
-                       otherElems, shmemAddr, laneId, requiresSrcPtrSwizzling,
-                       swizzleLaneOffset);
+        rewriter.setInsertionPointToStart(afterLoadBlock);
       }
-
-      rewriter.setInsertionPointToStart(afterLoadBlock);
 
       return {};
     };
@@ -932,14 +960,15 @@ struct AsyncCopyGlobalToLocalOpConversion
     freeVarMasks[rewriter.getStringAttr("block")] = 0;
     Value threadPred = emitRedundantThreadPredicateNonNull(
         freeVarMasks, rewriter, loc, targetInfo);
+    bool hasMask = static_cast<bool>(op.getMask());
+    bool threadPredIsWarpUniform =
+        isRedundantThreadPredWarpUniform(freeVarMasks, rewriter.getContext());
 
-    auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
-    auto emitGlobalLoadLds =
-        [this, &op, &b, laneId = laneId, threadPred, srcPtrTy, otherTy,
-         hasOther, requiresSrcPtrSwizzling](
-            RewriterBase &rewriter, Location loc, ArrayRef<Value> loadValues,
-            Value shmemAddr, int startIdx, VectorType vecTy,
-            Value multicastMask) -> SmallVector<Value> {
+    auto laneId = getLaneId(rewriter, loc);
+    auto emitGlobalLoadLds = [&](RewriterBase &rewriter, Location loc,
+                                 ArrayRef<Value> loadValues, Value shmemAddr,
+                                 int startIdx, VectorType vecTy,
+                                 Value multicastMask) -> SmallVector<Value> {
       auto [srcElem, maskElem, otherElems, swizzleLaneOffset] =
           unzipAsyncCopyValues(rewriter, loc, startIdx, loadValues, srcPtrTy,
                                otherTy, hasOther, vecTy.getNumElements());
@@ -953,12 +982,28 @@ struct AsyncCopyGlobalToLocalOpConversion
 
       // Predicate load based on threadPred && swizzledMask
       auto cond = b.and_(threadPred, maybeSwizzledMaskElem);
-      auto [loadBlock, afterLoadBlock] = emitBranch(rewriter, loc, cond);
 
-      emitAsyncLoad(rewriter, loc, targetInfo, vecBits, srcElem, shmemAddr,
-                    op.getCache(), multicastMask);
+      if (targetInfo.supportsDirectToLdsScatter() ||
+          (threadPredIsWarpUniform && !hasMask)) {
+        // For architectures supporting per lane LDS addresses or if the
+        // predicate is warp-uniform, mask loads by setting the *shared* address
+        // to out of range, the HW will drop the load before fetching the data
+        // from global memory.
+        Value predicatedAddress =
+            selectLdsAddressForPredicate(b, cond, shmemAddr);
 
-      rewriter.setInsertionPointToStart(afterLoadBlock);
+        emitAsyncLoad(rewriter, loc, targetInfo, vecBits, srcElem,
+                      predicatedAddress, op.getCache(), multicastMask);
+      } else {
+        // For architectures not supporting per lane LDS addresses we need to
+        // emit a branch.
+        auto [loadBlock, afterLoadBlock] = emitBranch(rewriter, loc, cond);
+
+        emitAsyncLoad(rewriter, loc, targetInfo, vecBits, srcElem, shmemAddr,
+                      op.getCache(), multicastMask);
+
+        rewriter.setInsertionPointToStart(afterLoadBlock);
+      }
 
       if (hasOther) {
         emitOtherStore(rewriter, loc, this->getTypeConverter(), vecTy, maskElem,
@@ -1246,6 +1291,10 @@ struct AsyncTDMCopyGlobalToLocalOpConversion
     auto shapePerCTA =
         triton::gpu::getShapePerCTA(encoding, tensorDescTy.getShape());
 
+    std::optional<uint32_t> warpUsedHint;
+    if (auto hintAttr = op.getWarpUsedHintAttr())
+      warpUsedHint = static_cast<uint32_t>(hintAttr.getInt());
+
     auto cacheMod = op.getCache();
     auto auxBits = mlir::LLVM::AMD::getCtrlBitsForCacheModifierOnTarget(
         cacheMod, /*isLoad*/ true, targetInfo);
@@ -1254,7 +1303,7 @@ struct AsyncTDMCopyGlobalToLocalOpConversion
         rewriter, loc, getTypeConverter(), desc, shapePerCTA, numWarps,
         padInterval, padAmount, offset, dstPtrs, op.getPred(), multicastMask,
         elementType, barrierPtr, /*isLoad=*/true, sharedLayout, encoding, ctaId,
-        auxBits);
+        auxBits, warpUsedHint);
 
     rewriter.eraseOp(op);
     return success();
