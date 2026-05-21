@@ -260,10 +260,10 @@ class CMakeBuild(build_ext):
         if cupti_include_dir == "":
             cupti_include_dir = os.path.join(get_base_dir(), "third_party", "nvidia", "backend", "include")
         cmake_args += ["-DCUPTI_INCLUDE_DIR=" + cupti_include_dir]
-        roctracer_include_dir = get_env_with_keys(["TRITON_ROCTRACER_INCLUDE_PATH"])
-        if roctracer_include_dir == "":
-            roctracer_include_dir = os.path.join(get_base_dir(), "third_party", "amd", "backend", "include")
-        cmake_args += ["-DROCTRACER_INCLUDE_DIR=" + roctracer_include_dir]
+        rocm_include_dir = get_env_with_keys(["TRITON_ROCM_INCLUDE_PATH"])
+        if rocm_include_dir == "":
+            rocm_include_dir = os.path.join(get_base_dir(), "third_party", "amd", "backend", "include")
+        cmake_args += ["-DROCM_INCLUDE_DIR=" + rocm_include_dir]
         return cmake_args
 
     def build_extension(self, ext):
@@ -357,6 +357,7 @@ class CMakeBuild(build_ext):
             "TRITON_CUPTI_LIB_BLACKWELL_PATH",
             "TRITON_NVDISASM_PATH",
             "TRITON_PTXAS_PATH",
+            "TRITON_PTXAS_BLACKWELL_PATH",
         ]
         cmake_args += [f"-D{option}={os.getenv(option)}" for option in passthrough_args if option in os.environ]
 
