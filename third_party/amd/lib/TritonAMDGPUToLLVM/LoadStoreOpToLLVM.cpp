@@ -983,19 +983,25 @@ struct AsyncCopyGlobalToLocalOpConversion
       // Predicate load based on threadPred && swizzledMask
       auto cond = b.and_(threadPred, maybeSwizzledMaskElem);
 
-      if (threadPredIsWarpUniform && !hasMask) {
+      // NOTE(gfx1250 fork): the OOB-LDS-address predication path
+      // (`selectLdsAddressForPredicate`) is intentionally disabled on
+      // gfx1250 -- see the revert of PR #708.  With ASYNC_COPY_SCALE=True,
+      // SCHEDULE=sliceNK, NUM_BUFFERS=3, and large float4 blocks the
+      // OOB-address path causes signal-6 aborts in CI/FFM.  Always fall back
+      // to branch predication on gfx1250.
+      bool isGFX1250 = targetInfo.getISAFamily() == ISAFamily::GFX1250;
+      if (threadPredIsWarpUniform && !hasMask && !isGFX1250) {
         // If the predicate is warp-uniform (and there is no per-lane mask),
         // mask the load by setting the *shared* address to out of range; the
         // HW will drop the load before fetching the data from global memory.
-        // NOTE: the gfx1250 supportsDirectToLdsScatter() path was intentionally
-        // not adopted here (the fork reverted PR #708).
         Value predicatedAddress =
             selectLdsAddressForPredicate(b, cond, shmemAddr);
 
         emitAsyncLoad(rewriter, loc, targetInfo, vecBits, srcElem,
                       predicatedAddress, op.getCache(), multicastMask);
       } else {
-        // Otherwise, emit a branch to predicate the load.
+        // Otherwise (gfx1250, or per-lane mask, or non-warp-uniform pred),
+        // emit a branch to predicate the load.
         auto [loadBlock, afterLoadBlock] = emitBranch(rewriter, loc, cond);
 
         emitAsyncLoad(rewriter, loc, targetInfo, vecBits, srcElem, shmemAddr,
