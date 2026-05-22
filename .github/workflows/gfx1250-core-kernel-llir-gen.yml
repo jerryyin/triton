@@ -15,7 +15,7 @@ permissions:
 jobs:
   gfx1250:
     name: gfx1250
-    runs-on: ['self-hosted', 'ffm']
+    runs-on: ['self-hosted', 'ffm:mi450']
 
     steps:
       - name: Checkout

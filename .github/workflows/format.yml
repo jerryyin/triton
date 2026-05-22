@@ -22,7 +22,7 @@ concurrency:
 jobs:
   pre-commit:
     name: Format
-    runs-on: ['self-hosted', 'cdna']
+    runs-on: ['self-hosted', 'format']
     steps:
       - name: Checkout
         uses: actions/checkout@v4

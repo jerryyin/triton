@@ -22,7 +22,7 @@ permissions:
 jobs:
   gfx1250:
     name: gfx1250 Corpus LLIR Generator
-    runs-on: ['self-hosted', 'ffm']
+    runs-on: ['self-hosted', 'ffm:mi450']
     timeout-minutes: 30
     # Run on manual trigger OR when 'corpus' label is added to PR
     if: >-

@@ -50,7 +50,7 @@ permissions:
 jobs:
   gfx1250:
     name: gfx1250
-    runs-on: ['self-hosted', 'ffm', 'roccap']
+    runs-on: ['self-hosted', 'ffm:mi450', 'roccap:mi450']
 
     steps:
       - name: Checkout
