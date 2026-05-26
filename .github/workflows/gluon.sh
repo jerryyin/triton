@@ -41,6 +41,12 @@ export HSA_MODEL_ARGS=ffm_enable_time_slicing
 
 export TRITON_HIP_USE_ASYNC_COPY=1
 
+# Cap CPU-side thread pools to reduce oversubscription.
+export OMP_NUM_THREADS=8
+export MKL_NUM_THREADS=8
+export OPENBLAS_NUM_THREADS=8
+export NUMEXPR_NUM_THREADS=8
+
 echo "=== Sanity Check ==="
 
 pip install pytest-timeout
