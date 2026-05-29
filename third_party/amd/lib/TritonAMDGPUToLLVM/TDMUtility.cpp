@@ -808,8 +808,10 @@ void fillTDMDescriptor(RewriterBase &rewriter, Location loc,
   // Update tensor shapes based on offset
   for (size_t i = 0; i < numDims; ++i) {
     auto diff = b.sub(tensorShape[i], offset[i]);
-    Value inBounds = b.icmp_ule(diff, tensorShape[i]);
-    tensorShape[i] = b.select(inBounds, diff, b.i32_val(0));
+    Value tooBig = b.icmp_sgt(offset[i], tensorShape[i]);
+    Value isNeg = b.icmp_slt(offset[i], zero);
+    Value oob = b.or_(tooBig, isNeg);
+    tensorShape[i] = b.select(oob, zero, diff);
   }
 
   // TDM store does not support padding in general. However, if the padding
