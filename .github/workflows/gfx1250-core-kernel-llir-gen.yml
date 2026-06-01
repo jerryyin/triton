@@ -59,7 +59,7 @@ jobs:
           docker stop ci-core-llir-${{ github.run_id }} 2>/dev/null || true
           docker rm -f ci-core-llir-${{ github.run_id }} 2>/dev/null || true
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v7
         with:
           name: core-llir-kernels-${{ env.DIRNAME }}
           path: /data/ci/llir/${{ env.DIRNAME }}/llir_kernels

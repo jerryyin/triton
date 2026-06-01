@@ -114,7 +114,7 @@ jobs:
           docker rm -f ci-roccap-${{ github.run_id }} 2>/dev/null || true
       - name: Upload artifact
         if: success()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v7
         with:
           name: triton-roccap-${{ env.DIRNAME }}
           path: /data/ci/roccap/${{ env.DIRNAME }}

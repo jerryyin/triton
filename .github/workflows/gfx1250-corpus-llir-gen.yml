@@ -76,7 +76,7 @@ jobs:
           docker rm -f ci-corpus-llir-${{ github.run_id }} 2>/dev/null || true
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v7
         with:
           name: corpus-kernels-${{ env.DIRNAME }}
           path: /data/ci/llir/${{ env.DIRNAME }}/corpus_kernels
