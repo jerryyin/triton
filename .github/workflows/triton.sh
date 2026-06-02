@@ -60,7 +60,7 @@ echo "=== Run Triton Unit Tests ==="
 EXCLUDE_PATTERNS=(
     # Exclude pattern for test_core.py
     "test_load_store_same_ptr" # takes >60 mins
-    # Excluse pattern for test_matmul.py, each takes > 1 hr
+    # Exclude pattern for test_matmul.py, each takes > 1 hr
     "test_preshuffle_scale_mxfp_cdna4"
     "test_batched_mxfp"
     "test_mxfp8_mxfp4_matmul"
@@ -68,8 +68,7 @@ EXCLUDE_PATTERNS=(
     # Exclude patterns for test_tensor_descriptor.py
     "test_tensor_descriptor_rank_reducing_matmul[float32]" # fails, but rank_reducing_load passes
     "test_tensor_descriptor_reduce"
-    # Exclude suspected hangs in https://github.com/AMD-Triton/triton-mi450/pull/24
-    "test_expect_zero_device_assert"
+    # Exclude patterns for test_autotuner.py; very slow on FFM.
     "test_kwargs"
 )
 
@@ -87,7 +86,12 @@ echo "Running pytest with filter: $K_EXPR"
 
 uptime
 
+# Use --timeout so a real hang surfaces as a single test failure
+# instead of taking down the whole job.
+# E.g. triton.testing.do_bench zeros a 256 MB L2-flush buffer between iterations;
+# which takes ~2 minutes on FFM.
 pytest -n 32 --durations=20 --maxfail=1 -k "$K_EXPR" -p no:forked -vv \
+    --timeout=600 --timeout-method=thread \
     python/test/unit/test_debug.py \
     python/test/unit/runtime
 

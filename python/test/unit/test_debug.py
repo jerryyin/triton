@@ -52,6 +52,9 @@ def _run_expect_zero_device_assert(device):
 
 
 def test_expect_zero_device_assert(device):
+    if is_hip_gfx1250():
+        pytest.skip("s_trap is not supported on FFM of GFX1250")
+
     result = run_in_process(_run_expect_zero_device_assert, (device, ), env={"TRITON_DEBUG": "1"})
     assert isinstance(result.exc, RuntimeError)
 
