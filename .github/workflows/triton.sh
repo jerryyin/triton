@@ -68,6 +68,9 @@ EXCLUDE_PATTERNS=(
     # Exclude patterns for test_tensor_descriptor.py
     "test_tensor_descriptor_rank_reducing_matmul[float32]" # fails, but rank_reducing_load passes
     "test_tensor_descriptor_reduce"
+    # Exclude suspected hangs in https://github.com/AMD-Triton/triton-mi450/pull/24
+    "test_expect_zero_device_assert"
+    "test_kwargs"
 )
 
 # Build the -k expression: "not (pattern1 or pattern2 or ...)"
