@@ -33,8 +33,8 @@ cd python/triton_kernels && pip3 install -e . && cd -
 echo "=== Setup Environment ==="
 
 source /ffm-base/ffmlite_env.sh
-export LD_LIBRARY_PATH=/ffm-update:$LD_LIBRARY_PATH
-export HSA_MODEL_LIB=/ffm-update/libhsakmtmodel.so
+#export LD_LIBRARY_PATH=/ffm-update:$LD_LIBRARY_PATH
+#export HSA_MODEL_LIB=/ffm-update/libhsakmtmodel.so
 export HSA_MODEL_NUM_THREADS=1
 export HSA_MODEL_TOML=".github/workflows/ffm_config.toml"
 export HSA_MODEL_ARGS=ffm_enable_time_slicing
@@ -74,4 +74,11 @@ HSA_MODEL_NUM_THREADS=4 python3 third_party/amd/python/examples/gluon/moe_gfx125
 echo "=== Saving LLIR into llir_kernels directory ==="
 cd $TRITON_HOME
 rm -rf llir_kernels && mkdir llir_kernels/
-find .triton/cache -type f -name "*.llir" -exec cp -t ./llir_kernels {} +
+find .triton/cache -type f -name "*.llir" -exec sh -c '
+    set -e
+    for src do
+        dst="./llir_kernels/${src#.triton/cache/}"
+        mkdir -p "$(dirname "$dst")"
+        cp "$src" "$dst"
+    done
+' sh {} +

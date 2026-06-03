@@ -30,11 +30,6 @@
     dona.component.jitcu_itrace.vmem_all_threads=true
     ffm_enable_itrace = true
 
-[ffm_itrace_dump_after_rt]
-    # Dump itrace after ray tracing instructions
-    dona.component.jitcu_itrace.dump_after_rt=true
-    ffm_enable_itrace = true
-
 [ffm_itrace_disable_wave_start]
     # Suppress wave-start lines in itrace output
     dona.component.jitcu_itrace.disable_wave_start=true
@@ -242,8 +237,22 @@ dona.component.shader_complex.time_instructions=true
     # Enables a per-bvh dump of all rays which are encountered by the RTS.
     dona.component.shader_complex.rt_ray_dump="binary"
 
+[ffm_rt_log_enable]
+    # Enables RTS logging via gclog during traversal
+    dona.component.shader_complex.rt_log_enabled=true
+    gclog.ProcessCommand = "class:ffm.rtlog,debug-3"
+
 ############### DISPATCH OPTIONS ###############
 
 [ffm_skip_dispatches]
     # Skip processing of all dispatch packets (kernel dispatches still complete with signals but no work is executed)
     dona.component.hsakmtmodel.skip_dispatches=true
+
+[ffm_serial_dispatch]
+    # Disable dispatch interleaving on executors.  When enabled, each dispatch
+    # runs to completion before the next dispatch starts on the same executor
+    # (no round-robin time-slicing between concurrent dispatches).  This
+    # guarantees that per-quantum stats and memory log dumps are cleanly
+    # per-dispatch, at the cost of preventing concurrent inter-kernel
+    # communication (e.g. spin-wait synchronization between kernels).
+    dona.component.hsakmtmodel.serial_dispatch=true
