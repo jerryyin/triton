@@ -32,7 +32,7 @@
 #include "llvm/Support/Alignment.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
-#include "llvm/TargetParser/TargetParser.h"
+#include "llvm/TargetParser/AMDGPUTargetParser.h"
 #include <array>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>

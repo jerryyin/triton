@@ -39,7 +39,7 @@ jobs:
             --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
             --shm-size=16G --ulimit memlock=-1 --ulimit stack=67108864 \
             -v "${{ github.workspace }}:/code" \
-            -v /data/ci/llvm/7ec6f177-release:/llvm \
+            -v /data/ci/llvm/mi450-62b7cf96-release:/llvm \
             -v /data/ci/ffm/rocdtif-7.13-am+ffmlite-mi400-r6.06:/ffm-base \
             -v /data/ci/ffm/rocdtif-7.13-am+ffmlite-mi400-r6.06:/ffm-update \
             -v /data/ci/triton-cache/json:/root/.triton/json \
@@ -75,7 +75,7 @@ jobs:
             --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
             --shm-size=16G --ulimit memlock=-1 --ulimit stack=67108864 \
             -v "${{ github.workspace }}:/code" \
-            -v /data/ci/llvm/7ec6f177-release:/llvm \
+            -v /data/ci/llvm/mi450-62b7cf96-release:/llvm \
             -v /data/ci/ffm/rocdtif-7.13-am+ffmlite-mi400-r6.06:/ffm-base \
             -v /data/ci/ffm/rocdtif-7.13-am+ffmlite-mi400-r6.06:/ffm-update \
             -v /data/ci/triton-cache/json:/root/.triton/json \

@@ -120,7 +120,8 @@ Value reduce(ImplicitLocOpBuilder &b, Value tensor, ArrayRef<int> axes) {
   for (int axis : axes) {
     assert(axis >= 0 && axis < tensorType.getRank() &&
            "invalid reduction axis");
-    assert(reducedAxes.insert(axis).second && "duplicate reduction axis");
+    bool inserted = reducedAxes.insert(axis).second;
+    assert(inserted && "duplicate reduction axis");
   }
 
   SmallVector<int32_t> transposeOrder;
@@ -140,7 +141,8 @@ Value reduce(ImplicitLocOpBuilder &b, Value tensor, ArrayRef<int> axes) {
   flattenedShape.push_back(reducedSize);
 
   tensor = triton::TransOp::create(b, tensor, transposeOrder);
-  tensor = triton::ReshapeOp::create(b, flattenedShape, tensor);
+  tensor = triton::ReshapeOp::create(b, flattenedShape, tensor,
+                                     /*allowReorder=*/true);
   return reduceLastDim<OpTy>(b, tensor);
 }
 
