@@ -808,6 +808,11 @@ void fillTDMDescriptor(RewriterBase &rewriter, Location loc,
   // Update tensor shapes based on offset
   Value zero = b.i32_val(0);
   for (size_t i = 0; i < numDims; ++i) {
+    // Clamp in this specific way to avoid suboptimal codegen by LLVM.
+    // In some cases, LLVM InstCombine match and fold patterns into instructions
+    // that only have VALU target instructions. Thus extra v_readfirstlane_b32
+    // instructions are emitted to copy the value to sgpr after VALU
+    // instructions.
     Value diff = b.sub(tensorShape[i], offset[i]);
     Value clamped = b.smax(diff, zero);
     Value isNeg = b.icmp_slt(offset[i], zero);
@@ -986,6 +991,11 @@ void fillTDMDescriptorForGatherScatter(
   // Adjust column tensor shape for OOB handling - subtract column offset to
   // get remaining elements.
   {
+    // Clamp in this specific way to avoid suboptimal codegen by LLVM.
+    // In some cases, LLVM InstCombine match and fold patterns into instructions
+    // that only have VALU target instructions. Thus extra v_readfirstlane_b32
+    // instructions are emitted to copy the value to sgpr after VALU
+    // instructions.
     Value zero = b.i32_val(0);
     Value diff = b.sub(tensorShape[1], globalColOffset);
     Value clamped = b.smax(diff, zero);
