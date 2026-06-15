@@ -47,9 +47,8 @@ public:
 
     Value desc = createUpdateTDMDescriptorOp(rewriter, loc, op.getDesc(),
                                              op.getIndices(), /*pred=*/pred);
-    auto copyOp =
-        amdgpu::AsyncTDMCopyGlobalToLocalOp::create(rewriter, loc, desc, alloc);
-    amdgpu::AsyncTDMWait::create(rewriter, loc, copyOp.getToken(), 0);
+    amdgpu::AsyncTDMCopyGlobalToLocalOp::create(rewriter, loc, desc, alloc);
+    amdgpu::AsyncTDMWait::create(rewriter, loc, ArrayRef<Value>{}, 0);
     rewriter.replaceOpWithNewOp<LocalLoadOp>(op, op.getType(), alloc);
     return success();
   }
@@ -124,10 +123,9 @@ public:
     Value alloc = LocalAllocOp::create(rewriter, loc, memDescType, op.getSrc());
     Value copyDesc = createUpdateTDMDescriptorOp(
         rewriter, loc, op.getDesc(), op.getIndices(), /*pred=*/Value{});
-    auto copyOp = amdgpu::AsyncTDMCopyLocalToGlobalOp::create(
-        rewriter, loc, copyDesc, alloc,
-        /*barrier=*/Value{});
-    amdgpu::AsyncTDMWait::create(rewriter, loc, copyOp.getToken(), 0);
+    amdgpu::AsyncTDMCopyLocalToGlobalOp::create(rewriter, loc, copyDesc, alloc,
+                                                /*barrier=*/Value{});
+    amdgpu::AsyncTDMWait::create(rewriter, loc, ArrayRef<Value>{}, 0);
     rewriter.eraseOp(op);
     return success();
   }

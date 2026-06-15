@@ -628,8 +628,8 @@ def test_compile_gemm_async_pipelined(BLOCK_M, BLOCK_N, BLOCK_K, NUM_BUFFERS, AS
     else:
         copy_instr_for_A = BLOCK_M // 4 // 4
         b_rows = BLOCK_N if B_K_CONTIG else BLOCK_K
-        copy_instr_for_B = b_rows // 4 // 4
-        copy_instr_per_iter = copy_instr_for_A + copy_instr_for_B
+        copy_isntr_for_B = b_rows // 4 // 4
+        copy_instr_per_iter = copy_instr_for_A + copy_isntr_for_B
         assert len(re.findall("ttg.async_copy_global_to_local", ttgir)) == NUM_BUFFERS * 2
         for cnt in range(NUM_BUFFERS - 1, -1, -1):
             assert re.search(f"s_wait_asynccnt 0x{(cnt * copy_instr_per_iter):x}", amdgcn)

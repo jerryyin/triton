@@ -106,9 +106,9 @@ tt.func public @test_scatter_i16(%desc: !tt.tensordesc<1x32xi8, #padded_desc_s16
 
 // CHECK-LABEL: test_cvt1
 // CHECK: amdg.async_tdm_copy_global_to_local {{.*}}: !tt.tensordesc<128x16xf16, #shared> -> !ttg.memdesc<128x16xf16, #shared, #smem, mutable>
-// CHECK: amdg.async_tdm_wait %{{.*}} {num = 0 : i32}
+// CHECK: amdg.async_tdm_wait  {num = 0 : i32}
 // CHECK: amdg.async_tdm_copy_local_to_global {{.*}} : !ttg.memdesc<128x128xf16, #shared2, #smem, mutable> -> !tt.tensordesc<128x128xf16, #shared2>
-// CHECK: amdg.async_tdm_wait %{{.*}} {num = 0 : i32}
+// CHECK: amdg.async_tdm_wait  {num = 0 : i32}
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 2], threadsPerWarp = [4, 8], warpsPerCTA = [8, 1], order = [1, 0], CGALayout = [[0, 0], [1, 0]]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [1, 2], threadsPerWarp = [1, 32], warpsPerCTA = [4, 2], order = [1, 0], CGALayout = [[0, 1], [0, 0]]}>
