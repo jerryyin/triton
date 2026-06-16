@@ -1,0 +1,241 @@
+name: LLVM Build
+
+on:
+  push:
+    branches:
+      - shared/gfx1250*
+    paths:
+      - cmake/llvm-build-info.json
+  pull_request:
+    branches:
+      - shared/gfx1250*
+    types:
+      - opened
+      - reopened
+      - synchronize
+    paths:
+      - .github/workflows/internal-llvm-build.yml
+      - cmake/llvm-build-info.json
+  workflow_dispatch:
+
+env:
+  SCCACHE_DIR: ${{ github.workspace }}/sccache
+  TRITON_CHECKOUT_DIR: ${{ github.workspace }}/triton-mi450
+  LLVM_SOURCE_DIR: ${{ github.workspace }}/llvm-project
+  LLVM_BUILD_DIR: ${{ github.workspace }}/llvm-build
+  LLVM_TARGET_OS: ubuntu
+  LLVM_ARCH: x64
+  LLVM_RELEASE_REPOSITORY: AMD-Triton/triton-mi450
+  LLVM_DISTRIBUTION_COMPONENTS: "llvm-headers;llvm-libraries;cmake-exports;mlir-headers;mlir-libraries;mlir-cmake-exports;lld-headers;lld-libraries;lld-cmake-exports;clang;clang-resource-headers;FileCheck;not;split-file;llc;opt;llvm-config;mlir-tblgen;mlir-translate"
+
+permissions:
+  contents: write
+
+jobs:
+
+  build:
+    name: Build on Ubuntu x86
+    runs-on: ['self-hosted', 'llvm-build']
+
+    steps:
+
+    - name: Checkout Repo
+      uses: actions/checkout@v6
+      with:
+        path: triton-mi450
+        fetch-depth: 1
+        persist-credentials: false
+        fetch-tags: false
+
+    - name: Fetch LLVM Build Metadata
+      shell: bash
+      run: |
+        LLVM_COMMIT_HASH="$(jq -r '.llvm_hash' "${TRITON_CHECKOUT_DIR}/cmake/llvm-build-info.json")"
+        echo "Found LLVM commit hash: ${LLVM_COMMIT_HASH}"
+        echo "llvm_commit_hash=${LLVM_COMMIT_HASH}" >> ${GITHUB_ENV}
+
+        LLVM_BUILD_NUMBER="$(jq -r '.build_number' "${TRITON_CHECKOUT_DIR}/cmake/llvm-build-info.json")"
+        echo "Found LLVM build number: ${LLVM_BUILD_NUMBER}"
+
+        SHORT_LLVM_COMMIT_HASH="${LLVM_COMMIT_HASH:0:8}"
+        echo "Short LLVM commit hash: ${SHORT_LLVM_COMMIT_HASH}"
+        echo "short_llvm_commit_hash=${SHORT_LLVM_COMMIT_HASH}" >> ${GITHUB_ENV}
+
+        INSTALL_DIR="llvm-${SHORT_LLVM_COMMIT_HASH}-${LLVM_TARGET_OS}-${LLVM_ARCH}-${LLVM_BUILD_NUMBER}"
+        echo "LLVM installation directory name: ${INSTALL_DIR}"
+        echo "llvm_install_dir=${INSTALL_DIR}" >> ${GITHUB_ENV}
+
+        RELEASE_TAG="llvm-build-${SHORT_LLVM_COMMIT_HASH}"
+        echo "LLVM release tag: ${RELEASE_TAG}"
+        echo "llvm_release_tag=${RELEASE_TAG}" >> ${GITHUB_ENV}
+
+    - name: Check LLVM Release Does Not Exist
+      if: ${{ github.repository == env.LLVM_RELEASE_REPOSITORY && startsWith(github.ref_name, 'shared/gfx1250') }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+
+        HTTP_STATUS="$(curl --silent --show-error --output /tmp/llvm-release.json --write-out "%{http_code}" \
+          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          "${GITHUB_API_URL}/repos/${LLVM_RELEASE_REPOSITORY}/releases/tags/${{ env.llvm_release_tag }}")"
+        if [ "${HTTP_STATUS}" != "404" ]; then
+          echo "LLVM release already exists or could not be checked: ${{ env.llvm_release_tag }} returned ${HTTP_STATUS}"
+          cat /tmp/llvm-release.json
+          exit 1
+        fi
+
+    - name: Check LLVM Checkout Token
+      shell: bash
+      env:
+        LLVM_CHECKOUT_TOKEN: ${{ secrets.AMD_LIGHTNING_INTERNAL_TOKEN }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${LLVM_CHECKOUT_TOKEN}" ]; then
+          echo "AMD_LIGHTNING_INTERNAL_TOKEN is required to read AMD-Lightning-Internal/llvm-project."
+          echo "Add it as an Actions secret in AMD-Triton/triton-mi450."
+          exit 1
+        fi
+
+        HTTP_STATUS="$(curl --silent --show-error --output /tmp/llvm-repo.json --write-out "%{http_code}" \
+          -H "Authorization: Bearer ${LLVM_CHECKOUT_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          "${GITHUB_API_URL}/repos/AMD-Lightning-Internal/llvm-project")"
+        if [ "${HTTP_STATUS}" != "200" ]; then
+          echo "AMD_LIGHTNING_INTERNAL_TOKEN cannot read AMD-Lightning-Internal/llvm-project: HTTP ${HTTP_STATUS}"
+          cat /tmp/llvm-repo.json
+          exit 1
+        fi
+
+    - name: Checkout LLVM
+      uses: actions/checkout@v6
+      with:
+        repository: AMD-Lightning-Internal/llvm-project
+        path: llvm-project
+        ref: ${{ env.llvm_commit_hash }}
+        token: ${{ secrets.AMD_LIGHTNING_INTERNAL_TOKEN }}
+        fetch-tags: false
+        lfs: false
+        submodules: false
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: 3.11
+
+    - name: Install Prerequisites
+      shell: bash
+      run: |
+        python3 -m pip install cmake ninja sccache
+        mkdir -p ${{ env.SCCACHE_DIR }}
+        rm -rf ${{ env.SCCACHE_DIR }}/*
+
+    - name: Enable Cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.SCCACHE_DIR }}
+        key: ${{ env.LLVM_TARGET_OS }}-${{ env.LLVM_ARCH }}-${{ env.short_llvm_commit_hash }}
+        restore-keys: ${{ env.LLVM_TARGET_OS }}-${{ env.LLVM_ARCH }}-
+
+    - name: Configure, Build, Test, and Install LLVM
+      run: >
+        cmake -GNinja -B"${LLVM_BUILD_DIR}"
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+        -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+        -DCMAKE_INSTALL_PREFIX="${{ env.llvm_install_dir }}"
+        -DCMAKE_LINKER=lld
+        -DLLVM_BUILD_UTILS=ON
+        -DLLVM_BUILD_TOOLS=ON
+        -DLLVM_ENABLE_ASSERTIONS=ON
+        -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
+        -DLLVM_ENABLE_PROJECTS="mlir;llvm;lld;clang"
+        -DLLVM_DISTRIBUTION_COMPONENTS="${{ env.LLVM_DISTRIBUTION_COMPONENTS }}"
+        -DLLVM_INSTALL_UTILS=ON
+        -DLLVM_TARGETS_TO_BUILD="host;NVPTX;AMDGPU"
+        -DLLVM_ENABLE_ZSTD=OFF
+        "${LLVM_SOURCE_DIR}/llvm"
+
+        ninja -C "${LLVM_BUILD_DIR}" check-mlir install-distribution
+
+        tar czf "${{ env.llvm_install_dir }}.tar.gz" "${{ env.llvm_install_dir }}"
+
+    - name: Upload Build Artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: llvm-${{ env.LLVM_TARGET_OS }}-${{ env.LLVM_ARCH }}
+        path: |
+          ${{ github.workspace }}/llvm-*-${{ env.LLVM_TARGET_OS }}-${{ env.LLVM_ARCH }}-*.tar.gz
+
+    - name: Print LLVM Package SHA256
+      shell: bash
+      run: |
+        set -euo pipefail
+        sha256sum "${{ env.llvm_install_dir }}.tar.gz"
+
+    - name: Upload LLVM Artifact to GitHub Release
+      if: ${{ github.repository == env.LLVM_RELEASE_REPOSITORY && startsWith(github.ref_name, 'shared/gfx1250') }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+
+        PACKAGE="${{ env.llvm_install_dir }}.tar.gz"
+        RELEASE_TAG="${{ env.llvm_release_tag }}"
+        SHA256="$(sha256sum "${PACKAGE}" | awk '{print $1}')"
+        echo "SHA256: ${SHA256}"
+
+        RELEASE_BODY="$(jq -n \
+          --arg tag_name "${RELEASE_TAG}" \
+          --arg name "${RELEASE_TAG}" \
+          --arg target_commitish "${GITHUB_SHA}" \
+          --arg llvm_commit "${{ env.llvm_commit_hash }}" \
+          --arg package "${PACKAGE}" \
+          --arg sha256 "${SHA256}" \
+          '{
+            tag_name: $tag_name,
+            target_commitish: $target_commitish,
+            name: $name,
+            body: ("LLVM build for `" + $llvm_commit + "`\n\nPackage: `" + $package + "`\nSHA256: `" + $sha256 + "`"),
+            draft: false,
+            prerelease: false
+          }')"
+
+        HTTP_STATUS="$(curl --silent --show-error --output /tmp/llvm-release-create.json --write-out "%{http_code}" \
+          -X POST \
+          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -H "Content-Type: application/json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          -d "${RELEASE_BODY}" \
+          "${GITHUB_API_URL}/repos/${LLVM_RELEASE_REPOSITORY}/releases")"
+        if [ "${HTTP_STATUS}" != "201" ]; then
+          echo "Failed to create release ${RELEASE_TAG}: HTTP ${HTTP_STATUS}"
+          cat /tmp/llvm-release-create.json
+          exit 1
+        fi
+
+        UPLOAD_URL="$(jq -r '.upload_url | split("{")[0]' /tmp/llvm-release-create.json)"
+        ASSET_NAME="$(basename "${PACKAGE}")"
+        HTTP_STATUS="$(curl --silent --show-error --output /tmp/llvm-release-upload.json --write-out "%{http_code}" \
+          -X POST \
+          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          -H "Content-Type: application/gzip" \
+          --data-binary @"${PACKAGE}" \
+          "${UPLOAD_URL}?name=${ASSET_NAME}")"
+        if [ "${HTTP_STATUS}" != "201" ]; then
+          echo "Failed to upload ${ASSET_NAME}: HTTP ${HTTP_STATUS}"
+          cat /tmp/llvm-release-upload.json
+          exit 1
+        fi
+
+    - name: Dump Sccache Statistics
+      run: sccache --show-stats
