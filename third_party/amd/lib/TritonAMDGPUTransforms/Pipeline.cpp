@@ -1,5 +1,6 @@
 #include "Dialect/TritonAMDGPU/IR/TargetFeatures.h"
 #include "TritonAMDGPUTransforms/Passes.h" // IWYU pragma: keep
+#include "amd/lib/TritonAMDGPUToLLVM/TargetInfo.h"
 #include "amd/lib/TritonAMDGPUTransforms/PipelineUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -180,6 +181,93 @@ void combineWaitOps(ModuleOp moduleOp, bool useAsyncCopy) {
         return triton::amdgpu::AsyncTDMWait::create(b, loc, operands, num);
       });
 }
+
+// The InsertClusterSync() and its helper function is to
+//  - insert clusterArriveOp at very beginning of the loop body
+//  - insert clusterWaitOp at the very end of loop body.
+//
+// The purpose of these two operations is to make all CTAs in the cluster run
+// about the same pace as all CTAs sync per iteration. By doing so, all CTAs
+// make load requests about the same time and render it possible for hardware
+// to multicast duplicated loads.
+//
+// These two operations need to be sufficiently separated as clusterArriveOp
+// may take a while to send its signal to its peer CTAs.
+//
+// TODO: We may need multiple pairs of arrive/wait if the loop body is big.
+//
+void InsertClusterSyncIntoLoop(scf::ForOp loop) {
+
+  mlir::OpBuilder builder(loop.getContext());
+  mlir::Block *loopBody = loop.getBody();
+  mlir::Operation &firstOp = loopBody->front();
+  builder.setInsertionPoint(&firstOp);
+  triton::amdgpu::ClusterBarrierArriveOp::create(builder, firstOp.getLoc());
+
+  auto terminator = loopBody->getTerminator();
+  builder.setInsertionPoint(terminator);
+  triton::amdgpu::ClusterBarrierWaitOp::create(builder, terminator->getLoc());
+}
+
+void InsertClusterSync(ModuleOp mod) {
+  if (auto arch = getAMDArch(mod)) {
+    triton::AMD::TargetInfo targetInfo(*arch);
+    auto isaFamily = targetInfo.getISAFamily();
+    if (isaFamily != triton::amdgpu::ISAFamily::GFX1250)
+      // Bail out if we know for sure the underlying architecture is not
+      // gfx1250 because it's the only architecture support multicasting as of
+      // this moment.
+      return;
+  }
+
+  auto hasMulticast = [](ValueRange valueRange) {
+    for (auto value : valueRange) {
+      if (auto type = dyn_cast<RankedTensorType>(value.getType())) {
+        auto cgaLayout =
+            ttg::getCGALayout(type.getEncoding()).getLinearLayout();
+        assert(cgaLayout.isSurjective() &&
+               "The tensor block is not completely covered by CTAs");
+        bool multicast = !cgaLayout.isInjective();
+        if (multicast)
+          return true;
+      }
+    }
+    return false;
+  };
+
+  SmallVector<scf::ForOp> loops;
+  mod->walk([&](scf::ForOp forOp) { loops.push_back(forOp); });
+  for (scf::ForOp forOp : loops) {
+    auto walkResult = forOp.walk([&](Operation *op) {
+      if (isa<tt::LoadOp, tt::DescriptorLoadOp, ttg::AsyncCopyGlobalToLocalOp,
+              triton::amdgpu::AsyncTDMCopyGlobalToLocalOp>(op)) {
+        if (hasMulticast(op->getResults()) || hasMulticast(op->getOperands()))
+          return mlir::WalkResult::interrupt();
+      }
+      return mlir::WalkResult::advance();
+    });
+
+    // No multi-casting occurrence
+    if (!walkResult.wasInterrupted())
+      continue;
+
+    // Check if cluster{Arrive|Wait} are already inserted in the loop.
+    walkResult = forOp.walk([&](Operation *op) {
+      if (isa<triton::amdgpu::ClusterBarrierArriveOp,
+              triton::amdgpu::ClusterBarrierWaitOp>(op))
+        return mlir::WalkResult::interrupt();
+      return mlir::WalkResult::advance();
+    });
+    if (walkResult.wasInterrupted()) {
+      LDBG("See clusterArriveOp/clusterWaitOp in the loop body!");
+      continue;
+    }
+
+    InsertClusterSyncIntoLoop(forOp);
+    LDBG("After insert clusterArriveOp and clusterWaitOp" << forOp);
+  }
+}
+
 } // namespace
 
 struct PipelinePass : impl::TritonAMDGPUPipelineBase<PipelinePass> {
@@ -215,6 +303,7 @@ struct PipelinePass : impl::TritonAMDGPUPipelineBase<PipelinePass> {
     for (scf::ForOp forOp : loops)
       pipelineTDMStores(forOp);
 
+    InsertClusterSync(moduleOp);
     tt::removePipeliningAttributes(moduleOp);
   }
 };

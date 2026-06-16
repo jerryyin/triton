@@ -92,14 +92,22 @@ def get_src_element_ty_size(dtype_str):
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES", [(128, 128, 16, 4), (64, 128, 32, 4), (32, 32, 32, 4),
                                                                    (256, 128, 32, 4), (64, 512, 32, 2),
                                                                    (512, 64, 32, 2), (64, 16, 64, 4)])
-@pytest.mark.parametrize("NUM_CTAS", [1, 2])
+@pytest.mark.parametrize("NUM_CTAS", [1, 2, 4, 8])
 @pytest.mark.parametrize("NUM_WARPS", [4, 8])
 @pytest.mark.parametrize("EPILOGUE_SUBTILE", [True, False])
 @pytest.mark.parametrize("LAYOUT_16x256", [True, False])
 def test_simple_matmul(dtype_src_str, dtype_dst_str, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, NUM_WARPS, NUM_CTAS, device,
                        EPILOGUE_SUBTILE, LAYOUT_16x256, monkeypatch):
-    if NUM_CTAS > 1 and (not is_cuda() or torch.cuda.get_device_capability()[0] < 9):
-        pytest.skip("Clusters requires nvidia compute capability >= 9")
+    if NUM_CTAS > 1:
+        if is_cuda() and (torch.cuda.get_device_capability()[0] < 9 or NUM_CTAS > 2):
+            pytest.skip("Clusters requires nvidia compute capability >= 9 and num_ctas == 2")
+        elif is_hip_gfx1250():
+            # NOTE: do not upstream this condition
+            if dtype_src_str == "float64" or dtype_dst_str == "float64":
+                pytest.skip("type float64 entails hefty amount of time in simulation")
+        else:
+            pytest.skip("Multi-cta is not supported")
+
     shared_mem_accum = (BLOCK_K * BLOCK_M + BLOCK_K * BLOCK_N) * NUM_STAGES * get_src_element_ty_size(dtype_src_str)
     shared_mem_avail = triton.runtime.driver.active.utils.get_device_properties(0)["max_shared_mem"]
     if shared_mem_accum > shared_mem_avail:
@@ -344,13 +352,17 @@ def fp8e8m0_to_float32(scale):
 
 
 @pytest.mark.interpreter
+@pytest.mark.parametrize("NUM_CTAS", [1, 2, 4])
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 128, 128), (256, 128, 128), (128, 256, 128),
                                                        (128, 256, 256), (128, 128, 64), (128, 64, 128), (128, 16, 256),
                                                        (128, 16, 64)])
 @pytest.mark.parametrize("NUM_STAGES", [1, 3])
 @pytest.mark.parametrize("NUM_WARPS", [4, 8])
 @pytest.mark.parametrize("nonKDim", ([0, 16, 32] if (is_hip_cdna() or is_hip_gfx1250()) else [0]))
-def test_mxfp(BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, nonKDim, NUM_WARPS, device):
+def test_mxfp(BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, nonKDim, NUM_WARPS, device, NUM_CTAS):
+    if NUM_CTAS > 1 and not is_hip_gfx1250():
+        pytest.skip("multi-cta is not supported")
+
     M = 1024
     N = 512
     K = 2048
@@ -387,7 +399,7 @@ def test_mxfp(BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, nonKDim, NUM_WARPS, device)
 
     out = mxfp_matmul[grid](a, b, output, a_scale, b_scale, M, N, K, a_scale.stride(0), a.stride(0), a.stride(1),
                             b.stride(0), b.stride(1), output.stride(0), output.stride(1), BLOCK_M, BLOCK_N, BLOCK_K,
-                            NUM_STAGES=NUM_STAGES, **kernel_kwargs, num_warps=NUM_WARPS)
+                            NUM_STAGES=NUM_STAGES, **kernel_kwargs, num_warps=NUM_WARPS, num_ctas=NUM_CTAS)
     a_scale_f32 = fp8e8m0_to_float32(a_scale)
     b_scale_f32 = fp8e8m0_to_float32(b_scale)
     a_scale_f32 = a_scale_f32.repeat_interleave(32, dim=1)

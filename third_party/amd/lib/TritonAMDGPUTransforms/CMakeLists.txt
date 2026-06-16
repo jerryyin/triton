@@ -27,6 +27,7 @@ add_triton_library(TritonAMDGPUTransforms
   UpdateAsyncWaitCount.cpp
   Utility.cpp
   WarpPipeliner.cpp
+  PlanCGA.cpp
   ConvertTensorDescriptor.cpp
 
   DEPENDS

@@ -255,6 +255,7 @@ class HIPBackend(BaseBackend):
         emuTF32 = False
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
+        amd.passes.ttgpuir.add_plan_cga(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
         amd.passes.ttgpuir.add_accelerate_matmul(pm, options.arch, options.matrix_instr_nonkdim, options.kpack)

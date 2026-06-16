@@ -613,7 +613,7 @@ def matmul_kernel_make_tensor_descriptor(a_ptr, b_ptr, c_ptr,  #
 
 
 @pytest.mark.interpreter
-@pytest.mark.parametrize("num_ctas", [1, 2])
+@pytest.mark.parametrize("num_ctas", [1, 2, 4])
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K, num_stages", [
     (128, 128, 16, 1),
     (512, 64, 32, 2),
@@ -624,8 +624,12 @@ def matmul_kernel_make_tensor_descriptor(a_ptr, b_ptr, c_ptr,  #
     (256, 128, 32, 4),
 ])
 def test_make_tensor_descriptor_matmul(num_stages, num_ctas, BLOCK_M, BLOCK_N, BLOCK_K, device):
-    if num_ctas == 2 and (not is_cuda() or torch.cuda.get_device_capability(0)[0] not in (9, 10)):
-        pytest.skip("CTAs is unsupported for these cards")
+    if num_ctas > 1:
+        if is_cuda() and (torch.cuda.get_device_capability()[0] < 9 or num_ctas > 2):
+            pytest.skip("Clusters requires nvidia compute capability >= 9 and num_ctas == 2")
+        elif not is_hip_gfx1250():
+            pytest.skip("Multi-cta is not supported")
+
     if is_hip() and (BLOCK_M, BLOCK_N, BLOCK_K, num_stages) == (256, 128, 32, 4):
         pytest.skip("Insufficient shared memory on HIP devices")
 

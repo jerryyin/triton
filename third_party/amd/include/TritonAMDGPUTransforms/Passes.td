@@ -408,4 +408,14 @@ def TritonAMDGPUConvertTensorDescriptor : Pass<"tritonamdgpu-convert-tensor-desc
   ];
 }
 
+def TritonAMDGPUPlanCGA : Pass<"tritonamdgpu-plan-cga", "mlir::ModuleOp"> {
+  let summary = "To lay out CTAs within a cluster in an attempt to enable multi-casting";
+  let description = [{
+    This pass is to lay out CGA for tt.dot and tt.dot_scaled and other operations.
+    It is expected to run at a very early stage of ttgir compiler pipeline. This
+    pass cannot be disabled if the kernel being compiled use multi-ctas.
+  }];
+  let dependentDialects = ["mlir::triton::amdgpu::TritonAMDGPUDialect"];
+}
+
 #endif
