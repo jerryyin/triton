@@ -1489,9 +1489,6 @@ struct AsyncTDMScatterOpConversion
 
     auto shapePerCTA = triton::gpu::getShapePerCTA(smemTy);
 
-    // Get the destination column offset
-    Value dstColOffset = adaptor.getDstColOffset();
-
     auto dstRowIndicesType =
         cast<RankedTensorType>(op.getDstRowIndices().getType());
 
@@ -1520,12 +1517,10 @@ struct AsyncTDMScatterOpConversion
     auto ctaId = targetInfo.getClusterCTAId(rewriter, loc);
     int numWarps = triton::gpu::lookupNumWarps(op);
 
-    // Predicate must be i32 (not i1) to match other elements in group0
-    Value pred = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
     if (failed(mlir::LLVM::AMD::emitTDMGatherScatter(
             rewriter, loc, getTypeConverter(), desc, shapePerCTA, padInterval,
-            padAmount, srcPtr, pred, /*multicastMask=*/{}, elementType,
-            barrierPtr, cgaLayout, ctaId, dstRowIndices, dstColOffset,
+            padAmount, srcPtr, /*multicastMask=*/{}, elementType, barrierPtr,
+            cgaLayout, ctaId, dstRowIndices,
             /*isGather=*/false, numWarps, dstRowIndicesType)))
       return failure();
 
@@ -1587,9 +1582,6 @@ struct AsyncTDMGatherOpConversion
 
     auto shapePerCTA = triton::gpu::getShapePerCTA(smemTy);
 
-    // Get the source column offset
-    Value srcColOffset = adaptor.getSrcColOffset();
-
     auto srcRowIndicesType =
         cast<RankedTensorType>(op.getSrcRowIndices().getType());
 
@@ -1623,8 +1615,8 @@ struct AsyncTDMGatherOpConversion
 
     if (failed(mlir::LLVM::AMD::emitTDMGatherScatter(
             rewriter, loc, getTypeConverter(), desc, shapePerCTA, padInterval,
-            padAmount, dstPtr, op.getPred(), multicastMask, elementType,
-            barrierPtr, cgaLayout, ctaId, srcRowIndices, srcColOffset,
+            padAmount, dstPtr, multicastMask, elementType, barrierPtr,
+            cgaLayout, ctaId, srcRowIndices,
             /*isGather=*/true, numWarps, srcRowIndicesType)))
       return failure();
 

@@ -1028,9 +1028,8 @@ void fillTDMDescriptorForGatherScatter(
     const LLVMTypeConverter *typeConverter, Type elementType,
     SmallVector<int64_t> blockShape, unsigned padInterval, unsigned padAmount,
     Value &group0, Value &group1, Value &group2, Value &group3,
-    Value ldsRowOffset, Value globalColOffset, Value ldsPtr, Value pred,
-    Value multicastMask, Value barrierPtr,
-    const triton::LinearLayout &cgaLayout, Value ctaId,
+    Value ldsRowOffset, Value ldsPtr, Value pred, Value multicastMask,
+    Value barrierPtr, const triton::LinearLayout &cgaLayout, Value ctaId,
     ArrayRef<Value> rowIndices, bool use32BitIndices, bool isGather) {
   assert(!rowIndices.empty() && "Gather/scatter requires row indices.");
 
@@ -1056,11 +1055,6 @@ void fillTDMDescriptorForGatherScatter(
       b.mul(b.zext(i64_ty, cgaOffsets[1].second), tensorStride[1]);
   globalPtr = b.gep(globalPtrTy, elementType, globalPtr, cgaColOffset);
 
-  // For scatter, only apply column offset to global address
-  // Row positions are specified by rowIndices
-  Value colOffset = b.mul(b.zext(i64_ty, globalColOffset), tensorStride[1]);
-  globalPtr = b.gep(globalPtrTy, elementType, globalPtr, colOffset);
-
   // Calculate LDS offset based on row offset only (column always starts at 0)
   Value ldsOffset = b.mul(ldsRowOffset, b.i32_val(blockShape[1]));
 
@@ -1073,9 +1067,9 @@ void fillTDMDescriptorForGatherScatter(
   }
   ldsPtr = b.gep(sharedPtrTy, elementType, ldsPtr, ldsOffset);
 
-  // Adjust column tensor shape for OOB handling - subtract column offset to
-  // get remaining elements (shared signed clamp; see clampTensorDimByOffset).
-  tensorShape[1] = clampTensorDimByOffset(b, tensorShape[1], globalColOffset);
+  // tensorShape[1] is the OOB extent carried by the descriptor (set once via
+  // update_tensor_descriptor set_bounds / clamp_bounds, like the contiguous
+  // copy).  No per-call column clamp here.
 
   // For scatter with padding (store-from-LDS): clamp tensor_dim0 to the
   // original column width so OOB checking drops padding elements before they
@@ -1384,18 +1378,20 @@ size_t getTDMGatherScatterInstrinsicCount(RankedTensorType indicesType) {
   return analyzeGatherScatterLayout(indicesType).numInstructions;
 }
 
-LogicalResult emitTDMGatherScatter(
-    RewriterBase &rewriter, Location loc,
-    const LLVMTypeConverter *typeConverter, ArrayRef<Value> desc,
-    ArrayRef<int64_t> blockShape, unsigned padInterval, unsigned padAmount,
-    Value ldsPtr, Value pred, Value multicastMask, Type elementType,
-    Value barrierPtr, const triton::LinearLayout &cgaLayout, Value ctaId,
-    ArrayRef<Value> rowIndices, Value colOffset, bool isGather, int numWarps,
-    RankedTensorType indicesType) {
+LogicalResult
+emitTDMGatherScatter(RewriterBase &rewriter, Location loc,
+                     const LLVMTypeConverter *typeConverter,
+                     ArrayRef<Value> desc, ArrayRef<int64_t> blockShape,
+                     unsigned padInterval, unsigned padAmount, Value ldsPtr,
+                     Value multicastMask, Type elementType, Value barrierPtr,
+                     const triton::LinearLayout &cgaLayout, Value ctaId,
+                     ArrayRef<Value> rowIndices, bool isGather, int numWarps,
+                     RankedTensorType indicesType) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
 
   assert(!rowIndices.empty() && "Gather/scatter requires row indices");
-  assert(colOffset && "Gather/scatter requires column offset");
+
+  Value pred = vecGet(b, desc[0], 0);
 
   bool use32BitIndices =
       indicesType.getElementType().getIntOrFloatBitWidth() == 32;
@@ -1481,8 +1477,8 @@ LogicalResult emitTDMGatherScatter(
 
     fillTDMDescriptorForGatherScatter(
         rewriter, loc, typeConverter, elementType, to_vector(blockShape),
-        padInterval, padAmount, g0, g1, g2, g3, ldsRowOffset, colOffset, ldsPtr,
-        pred, multicastMask, barrierPtr, cgaLayout, ctaId, batchIndices,
+        padInterval, padAmount, g0, g1, g2, g3, ldsRowOffset, ldsPtr, pred,
+        multicastMask, barrierPtr, cgaLayout, ctaId, batchIndices,
         use32BitIndices, isGather);
 
     auto v8i32Ty = VectorType::get(8, rewriter.getI32Type());

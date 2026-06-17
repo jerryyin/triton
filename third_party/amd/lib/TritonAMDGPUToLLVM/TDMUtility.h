@@ -91,7 +91,6 @@ void fillTDMDescriptor(RewriterBase &rewriter, Location loc,
 // Scatter writes from LDS to non-contiguous rows in global memory.
 // - rowIndices: which global rows to read from (gather) or write to (scatter)
 // - ldsRowOffset: starting row within shared memory
-// - globalColOffset: starting column in global memory
 // - use32BitIndices: true for 32-bit indices (max 8 rows), false for 16-bit
 // (max 16 rows)
 void fillTDMDescriptorForGatherScatter(
@@ -99,9 +98,8 @@ void fillTDMDescriptorForGatherScatter(
     const LLVMTypeConverter *typeConverter, Type elementType,
     SmallVector<int64_t> blockShape, unsigned padInterval, unsigned padAmount,
     Value &group0, Value &group1, Value &group2, Value &group3,
-    Value ldsRowOffset, Value globalColOffset, Value ldsPtr, Value pred,
-    Value multicastMask, Value barrierPtr,
-    const triton::LinearLayout &cgaLayout, Value ctaId,
+    Value ldsRowOffset, Value ldsPtr, Value pred, Value multicastMask,
+    Value barrierPtr, const triton::LinearLayout &cgaLayout, Value ctaId,
     ArrayRef<Value> rowIndices, bool use32BitIndices, bool isGather);
 
 // Emit a TDM load/store for regular contiguous transfers (1D-5D).
@@ -152,10 +150,10 @@ emitTDMGatherScatter(RewriterBase &rewriter, Location loc,
                      const LLVMTypeConverter *typeConverter,
                      ArrayRef<Value> desc, ArrayRef<int64_t> blockShape,
                      unsigned padInterval, unsigned padAmount, Value ldsPtr,
-                     Value pred, Value multicastMask, Type elementType,
-                     Value barrierPtr, const triton::LinearLayout &cgaLayout,
-                     Value ctaId, ArrayRef<Value> rowIndices, Value colOffset,
-                     bool isGather, int numWarps, RankedTensorType indicesType);
+                     Value multicastMask, Type elementType, Value barrierPtr,
+                     const triton::LinearLayout &cgaLayout, Value ctaId,
+                     ArrayRef<Value> rowIndices, bool isGather, int numWarps,
+                     RankedTensorType indicesType);
 
 // Emit prefetches for a TDM tile to make it available for an actual load in
 // the future. Data is prefetched cooperatively across all CTAs, warps, and

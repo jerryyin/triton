@@ -95,8 +95,11 @@ static Value createTDMAsyncCopy(scf::ForOp forOp, const TDMStore &store,
           indicesType.getShape(), indicesType.getElementType(), idxEnc);
       indices = ttg::ConvertLayoutOp::create(builder, loc, newIdxType, indices);
     }
+    Value zero = arith::ConstantIntOp::create(builder, loc, 0, 32);
+    Value scatterDesc = createUpdateTDMDescriptorOp(
+        builder, loc, desc, {zero, scatterOp.getYOffset()}, /*pred=*/Value{});
     auto scatterTDMOp = ttag::AsyncTDMScatterOp::create(
-        builder, loc, desc, indices, scatterOp.getYOffset(), alloc,
+        builder, loc, scatterDesc, indices, alloc,
         /*barrier=*/Value{});
     token = scatterTDMOp.getRetToken();
   }
