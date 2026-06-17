@@ -14,6 +14,7 @@ import tarfile
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
 import zipfile
 from dataclasses import dataclass
 from functools import cached_property
@@ -87,17 +88,89 @@ def _normalize_required_path(value: str, name: str) -> str:
     return normalized
 
 
-def open_url(url):
+def _get_github_token():
+    return os.getenv("TRITON_MI450_LLVM_DOWNLOAD_GITHUB_TOKEN") or os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+
+
+def _get_url_headers(url, accept=None):
     user_agent = "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0"
     headers = {
         "User-Agent": user_agent,
     }
+    if accept is not None:
+        headers["Accept"] = accept
+    hostname = urllib.parse.urlparse(url).hostname
+    if hostname == "api.github.com":
+        headers.setdefault("Accept", "application/vnd.github+json")
+        headers["X-GitHub-Api-Version"] = "2022-11-28"
+    token = _get_github_token()
+    if token and hostname in ("github.com", "api.github.com"):
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def open_url(url, accept=None):
+    headers = _get_url_headers(url, accept=accept)
     request = urllib.request.Request(url, None, headers)
     # Set timeout to 300 seconds to prevent the request from hanging forever.
     return urllib.request.urlopen(request, timeout=300)
 
 
-def _download_file_with_curl(curl: str, url: str, path: str, label: str):
+def _parse_github_release_download_url(url):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != "github.com":
+        return None
+    path_parts = parsed.path.strip("/").split("/")
+    if len(path_parts) < 6 or path_parts[2:4] != ["releases", "download"]:
+        return None
+    owner, repo = path_parts[0], path_parts[1]
+    tag = urllib.parse.unquote(path_parts[4])
+    asset_name = urllib.parse.unquote("/".join(path_parts[5:]))
+    return owner, repo, tag, asset_name
+
+
+def _get_github_release_asset_api_url(url):
+    release = _parse_github_release_download_url(url)
+    if release is None:
+        return url
+    owner, repo, tag, asset_name = release
+    if _get_github_token() is None or (owner, repo) != ("AMD-Triton", "triton-mi450"):
+        return url
+    owner_path = urllib.parse.quote(owner, safe="")
+    repo_path = urllib.parse.quote(repo, safe="")
+    tag_path = urllib.parse.quote(tag, safe="")
+    api_url = f"https://api.github.com/repos/{owner_path}/{repo_path}/releases/tags/{tag_path}"
+    try:
+        with open_url(api_url) as response:
+            release_info = json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            raise RuntimeError(
+                f"GitHub release {owner}/{repo}@{tag} was not found or is not visible to the configured "
+                "TRITON_MI450_LLVM_DOWNLOAD_GITHUB_TOKEN. Check that the token has Contents: Read-only "
+                "access to the repository and has been approved if organization policy requires it.") from None
+        raise
+
+    for asset in release_info.get("assets", []):
+        if asset.get("name") == asset_name:
+            return asset["url"]
+
+    available_assets = sorted(asset.get("name", "<unnamed>") for asset in release_info.get("assets", []))
+    raise RuntimeError(f"GitHub release {owner}/{repo}@{tag} does not contain asset {asset_name!r}. "
+                       f"Available assets: {', '.join(available_assets) or '<none>'}.")
+
+
+def _redact_command(command):
+    redacted = []
+    for arg in command:
+        if isinstance(arg, str) and arg.lower().startswith("authorization:"):
+            redacted.append("Authorization: <redacted>")
+        else:
+            redacted.append(arg)
+    return redacted
+
+
+def _download_file_with_curl(curl: str, url: str, path: str, label: str, headers=None):
     print(f"{label}:", file=sys.stdout, flush=True)
     command = [
         curl,
@@ -111,32 +184,41 @@ def _download_file_with_curl(curl: str, url: str, path: str, label: str):
         "--url",
         url,
     ]
+    for key, value in (headers or _get_url_headers(url)).items():
+        command.extend(["--header", f"{key}: {value}"])
     hostname = urllib.parse.urlparse(url).hostname
     if hostname is not None and hostname.endswith(".blob.core.windows.net"):
         # Anonymous Azure Blob requests default to 2009-09-19, which ignores Range requests.
         command.extend(["--header", "x-ms-version: 2011-08-18"])
-    subprocess.run(
-        command,
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-        check=True,
-    )
+    try:
+        subprocess.run(
+            command,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        error.cmd = _redact_command(error.cmd)
+        raise RuntimeError(f"{label} failed with exit code {error.returncode}") from error
 
 
-def _download_file_with_urllib(url: str, path: str, label: str):
+def _download_file_with_urllib(url: str, path: str, label: str, accept=None):
     with open(path, "wb") as file:
-        with open_url(url) as response:
+        with open_url(url, accept=accept) as response:
             progress_reader = DownloadProgressReader(response, label)
             shutil.copyfileobj(progress_reader, file)
 
 
 def _download_file(url: str, path: str, label: str):
+    download_url = _get_github_release_asset_api_url(url)
+    accept = "application/octet-stream" if download_url != url else None
+    headers = _get_url_headers(download_url, accept=accept)
     curl = shutil.which("curl")
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     if curl is not None:
-        _download_file_with_curl(curl, url, path, label)
+        _download_file_with_curl(curl, download_url, path, label, headers=headers)
     else:
-        _download_file_with_urllib(url, path, label)
+        _download_file_with_urllib(download_url, path, label, accept=accept)
 
 
 def _get_archive_path(download_dir: str, url: str):
@@ -355,8 +437,17 @@ def get_llvm_package_info(helper_args: BuildHelperArgs):
     name = f"llvm-{rev}-{system_suffix}-{build_number}"
     # Create a stable symlink that doesn't include revision
     sym_name = f"llvm-{system_suffix}"
-    url = f"https://oaitriton.blob.core.windows.net/public/llvm-builds/{name}.tar.gz"
-    sha256sum = llvm_info["sha256sum"][system_suffix]
+    url_template = llvm_info.get("url", "https://oaitriton.blob.core.windows.net/public/llvm-builds/{name}.tar.gz")
+    url = url_template.format(
+        name=name,
+        rev=rev,
+        llvm_hash=llvm_info["llvm_hash"],
+        system_suffix=system_suffix,
+        build_number=build_number,
+    )
+    sha256sum = llvm_info["sha256sum"].get(system_suffix)
+    if sha256sum is None:
+        raise RuntimeError(f"LLVM pre-compiled image is not configured for {system_suffix}.")
     return Package(
         "llvm",
         name,

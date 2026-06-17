@@ -1,32 +1,39 @@
-
-| **`Documentation`** | **`Nightly Wheels`** |
-|-------------------- | -------------------- |
-| [![Documentation](https://github.com/triton-lang/triton/actions/workflows/documentation.yml/badge.svg)](https://triton-lang.org/) | [![Wheels](https://github.com/triton-lang/triton/actions/workflows/wheels.yml/badge.svg)](https://github.com/triton-lang/triton/actions/workflows/wheels.yml) |
-
-# Triton Conference 2025
-
-![Triton Banner](https://github.com/user-attachments/assets/b4b6972a-857c-417f-bf2c-f16f38a358c0)
-
-The 3rd Triton Developer Conference took place on October 21, 2025 at the Microsoft Silicon Valley Campus in Mountain View, California.
-
-### Conference Materials
-
-Conference recordings and materials are now available online:
-
-- **Conference Videos:** [YouTube Playlist](https://www.youtube.com/playlist?list=PLc_vA1r0qoiQqCdWFDUDqI90oY5EjfGuO)
-- **Conference Slides:** [Google Drive Folder](https://drive.google.com/drive/folders/1KB6tD3UM1J0_eUp-F-JSlGrargLBawIr)
-
-For previous conference materials, see:
-- [2024 Conference Materials](docs/meetups/dev_conference_2024.md)
-- [2023 Conference Materials](docs/meetups/dev-meetup-2023.md)
-
-# Triton
+# Triton for GFX1250
 
 This is the development repository of Triton, a language and compiler for writing highly efficient custom Deep-Learning primitives. The aim of Triton is to provide an open-source environment to write fast code at higher productivity than CUDA, but also with higher flexibility than other existing DSLs.
 
 The foundations of this project are described in the following MAPL2019 publication: [Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations](http://www.eecs.harvard.edu/~htk/publication/2019-mapl-tillet-kung-cox.pdf). Please consider citing this work if you use Triton!
 
 The [official documentation](https://triton-lang.org) contains installation instructions and tutorials.  See also these third-party [Triton puzzles](https://github.com/srush/Triton-Puzzles), which can all be run using the Triton interpreter -- no GPU required.
+
+# TRITON_MI450_LLVM_DOWNLOAD_GITHUB_TOKEN
+
+This repo uses prebuilt internal LLVM packages. CI and source builds may
+download it from the `AMD-Triton/triton-mi450` release artifacts. If the
+release asset is not publicly readable from the build environment, create
+a fine-grained personal access token and expose it as
+`TRITON_MI450_LLVM_DOWNLOAD_GITHUB_TOKEN`:
+
+1. In GitHub, open **Settings** -> **Developer settings** ->
+   **Personal access tokens** -> **Fine-grained tokens**.
+2. Click **Generate new token**.
+3. Set **Resource owner** to `AMD-Triton`.
+4. Set **Repository access** to **Only select repositories**, then select
+   `AMD-Triton/triton-mi450`.
+5. Under **Repository permissions**, set **Contents** to **Read-only**. Leave
+   all other permissions unset.
+6. Generate the token. It should be available immedidately; no approval needed.
+
+If used in a CI environment, add the token to the repository that downloads LLVM:
+**Settings** -> **Secrets and variables** -> **Actions** -> **New repository secret**.
+Name the secret `TRITON_MI450_LLVM_DOWNLOAD_GITHUB_TOKEN` and paste the generated
+token as its value.
+
+For local builds, export the token before installing or building Triton:
+
+```shell
+export TRITON_MI450_LLVM_DOWNLOAD_GITHUB_TOKEN=<token>
+```
 
 # Quick Installation
 

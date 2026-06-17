@@ -37,12 +37,16 @@ def is_coexec_scheduler_supported(arch):
     return arch in ["gfx1250"]
 
 
+def is_coexec_scheduler_enabled(arch):
+    if knobs.amd.use_coexec_scheduler is not None:
+        return knobs.amd.use_coexec_scheduler
+    return False  # arch in ["gfx1250"]
+
+
 def is_expert_scheduling_enabled(arch):
-    if arch not in ["gfx1250"]:
-        return False
-    if knobs.amd.use_expert_scheduling is None:
-        return True
-    return knobs.amd.use_expert_scheduling
+    if knobs.amd.use_expert_scheduling is not None:
+        return knobs.amd.use_expert_scheduling
+    return False  # arch in ["gfx1250"]
 
 
 def is_fpsan_supported(arch):
@@ -470,7 +474,7 @@ class HIPBackend(BaseBackend):
         # and may improve scheduling.
         kernel_fn.add_fn_attr("amdgpu-waves-per-eu", f"{options.waves_per_eu}, {options.waves_per_eu}")
 
-        if is_coexec_scheduler_supported(options.arch) and options.num_warps <= 4:
+        if is_coexec_scheduler_enabled(options.arch) and options.num_warps <= 4:
             kernel_fn.add_fn_attr("amdgpu-sched-strategy", "coexec")
 
         denormal_mode = "preserve-sign" if options.allow_flush_denorm else "ieee"
