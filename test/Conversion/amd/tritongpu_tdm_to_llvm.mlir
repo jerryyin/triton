@@ -169,8 +169,6 @@ module attributes {"ttg.num-ctas" = 16 : i32, "ttg.num-warps" = 4 : i32, ttg.tar
     %row_indices: tensor<8xi32, #slice1>,
     %pred: i32
   ) {
-    %c0_i32 = arith.constant 0 : i32
-
     // CHECK-DAG: %[[GROUP_MASK:.*]] = llvm.mlir.constant(4369 : i32) : i32
     // CHECK-DAG: %[[NON_FREE_BITS:.*]] = llvm.mlir.constant(-13 : i32) : i32
     // CHECK-DAG: %[[CTA_ID:.*]] = rocdl.cluster.workgroup.id.x

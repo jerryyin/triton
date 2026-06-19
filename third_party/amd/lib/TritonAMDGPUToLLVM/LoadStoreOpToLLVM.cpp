@@ -1449,7 +1449,6 @@ struct AsyncTDMScatterOpConversion
   matchAndRewrite(triton::amdgpu::AsyncTDMScatterOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    auto b = TritonLLVMOpBuilder(loc, rewriter);
 
     // Multi-CTA not supported for scatter
     if (lookupNumCTAs(op) > 1) {
@@ -1545,8 +1544,6 @@ struct AsyncTDMGatherOpConversion
   matchAndRewrite(triton::amdgpu::AsyncTDMGatherOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    auto b = TritonLLVMOpBuilder(loc, rewriter);
-
     auto tensorDescTy = op.getDesc().getType();
     auto smemTy = op.getDst().getType();
     auto paddedEnc =

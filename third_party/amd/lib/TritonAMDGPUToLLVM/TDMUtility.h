@@ -122,7 +122,8 @@ size_t getTDMGatherScatterInstrinsicCount(RankedTensorType indicesType);
 // - ldsPtr: pointer to shared memory (destination for gather, source for
 // scatter)
 // - rowIndices: which global rows to read from (gather) or write to (scatter)
-// - colOffset: starting column offset in global memory
+// The descriptor supplies the global column position and predicate; CGA
+// column offsets are applied from `cgaLayout`.
 // - isGather: true for gather (global->LDS), false for scatter (LDS->global)
 // - numWarps: number of warps in the CTA (used for warp predication)
 // - indicesType: the RankedTensorType of the index tensor. Used to derive
