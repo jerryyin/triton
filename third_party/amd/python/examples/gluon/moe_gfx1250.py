@@ -1259,8 +1259,10 @@ def matmul(a, b, bias, a_ragged_metadata: RaggedTensorMetadata | None = None,
     else:
         batch_size = 1
 
+    intermediate_out_dtype = precision_config.intermediate_out_dtype or torch.float32
     opt_flags = make_opt_flags(out_dtype, a.dtype, b.dtype, precision_config, batch_size, M, N, b.shape[-2],
-                               a_ragged_metadata, False, False, False, False, False, block_k=block_k)
+                               a_ragged_metadata, False, False, False, False, False, block_k=block_k,
+                               intermediate_out_dtype=intermediate_out_dtype)
 
     opt_flags.block_m = block_m
     opt_flags.block_n = block_n
