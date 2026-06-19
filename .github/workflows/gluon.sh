@@ -100,6 +100,6 @@ export HSA_ENABLE_SDMA=0
 
 # TODO: FFM can't fully clean up the model at this moment, so we need to use --forked to run each test in a separate subprocess.
 # Otherwise there will be segfaults when running multiple tests in the same process.
-# Disabled in https://github.com/AMD-Triton/triton-mi450/pull/60 due to hangs
-#HSA_MODEL_NUM_THREADS=1 pytest --count=1 -n 32 --forked --durations=10 third_party/amd/python/examples/gluon/moe_gfx1250.py
+HSA_MODEL_NUM_THREADS=1 pytest --count=1 -n 32 --forked --durations=10 -vv --timeout=60 --timeout-method=thread \
+  third_party/amd/python/examples/gluon/moe_gfx1250.py
 export HSA_MODEL_ARGS=ffm_enable_time_slicing

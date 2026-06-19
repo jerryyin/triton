@@ -68,8 +68,9 @@ HSA_MODEL_NUM_THREADS=4 python3 third_party/amd/python/examples/gluon/mxfp_gemm_
 HSA_MODEL_NUM_THREADS=4 python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 1 --seqlen_q 8192 --seqlen_k 8192 --num_q_heads 1 --num_k_heads 1 --head_sz 128 --block_m 256 --block_n 128 --scale_type global --pipelined --num_warps 4
 
 export HSA_ENABLE_SDMA=0
-HSA_MODEL_NUM_THREADS=4 python3 third_party/amd/python/examples/gluon/moe_gfx1250.py -b 256 -d1 512 -d2 3072 -a dispatch -et 128 -ea 4 --num_warps 4 --num_buffers 2 -bm 256 -bn 256 -bk 256 --schedule sliceNK
-HSA_MODEL_NUM_THREADS=4 python3 third_party/amd/python/examples/gluon/moe_gfx1250.py -b 256 -d1 512 -d2 3072 -a combine -et 128 -ea 4 --num_warps 4 --num_buffers 2 -bm 256 -bn 256 -bk 256 --schedule sliceNK
+# Disabled in https://github.com/AMD-Triton/triton-mi450/pull/63 due to segfault
+#HSA_MODEL_NUM_THREADS=4 python3 third_party/amd/python/examples/gluon/moe_gfx1250.py -b 256 -d1 512 -d2 3072 -a dispatch -et 128 -ea 4 --num_warps 4 --num_buffers 2 -bm 256 -bn 256 -bk 256 --schedule sliceNK
+#HSA_MODEL_NUM_THREADS=4 python3 third_party/amd/python/examples/gluon/moe_gfx1250.py -b 256 -d1 512 -d2 3072 -a combine -et 128 -ea 4 --num_warps 4 --num_buffers 2 -bm 256 -bn 256 -bk 256 --schedule sliceNK
 
 echo "=== Saving LLIR into llir_kernels directory ==="
 cd $TRITON_HOME

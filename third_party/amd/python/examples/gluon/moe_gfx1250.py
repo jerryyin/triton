@@ -1,4 +1,5 @@
 import math
+import os
 import torch
 import pytest
 import triton
@@ -1386,6 +1387,28 @@ def test_matmul(m, n, k, block_m, block_n, block_k, dtype_a, dtype_b, do_gather,
 
         if num_buffers != 3:
             pytest.skip('Pingpong requires 3 buffers')
+
+    if os.environ.get("HSA_MODEL_TOML"):
+        is_ffm_float8_mxfloat4 = dtype_a in ("float8_e5m2", "float8_e4m3fn") and dtype_b == "mxfloat4_e2m1"
+        is_ffm_problem_size = (m, n, k) in ((300, 400, 416), (128, 128, 512))
+        is_ffm_problem_block = (block_m, block_n, block_k) == (256, 256, 256)
+        is_ffm_problem_setup = is_ffm_float8_mxfloat4 and is_ffm_problem_size and is_ffm_problem_block
+        is_ffm_problem_setup = is_ffm_problem_setup and num_buffers == 2 and not pingpong
+        ffm_reason = "Skipping FFM gfx1250 MoE float8/mxfloat4 case that crashes or hangs in CI"
+
+        if is_ffm_problem_setup and num_warps == 4 and swiglu_opts == (1.1, 1.4):
+            pytest.skip(ffm_reason)
+
+        if is_ffm_problem_setup and (m, n, k) == (300, 400, 416) and dtype_a == "float8_e5m2":
+            if (num_warps == 4 and swiglu_opts is None and do_scatter and not do_gather
+                    and ((schedule == "sliceK" and SCALE_PRESHUFFLING and do_bias) or
+                         (schedule == "sliceNK" and SCALE_PRESHUFFLING and not do_bias))):
+                pytest.skip(ffm_reason)
+
+        if (is_ffm_problem_setup and (m, n, k) == (300, 400, 416) and num_warps == 8 and schedule == "sliceNK"
+                and swiglu_opts == (1.1, 1.4) and not SCALE_PRESHUFFLING and not do_bias and do_scatter
+                and not do_gather and dtype_a == "float8_e4m3fn"):
+            pytest.skip(ffm_reason)
 
     torch.manual_seed(0)
 
