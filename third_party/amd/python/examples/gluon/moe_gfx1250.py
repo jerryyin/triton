@@ -1276,7 +1276,7 @@ def matmul(a, b, bias, a_ragged_metadata: RaggedTensorMetadata | None = None,
 
     # init output
     allocation = init_allocation(a, b, precision_config, fused_activation, gather_indx, scatter_indx, batch_size, 1,
-                                 opt_flags)
+                                 opt_flags, intermediate_out_dtype)
     memory = apply_allocation(allocation, None)
     # (1, batch_dim, M, N // fused_activation.specs)
     out_matmul = memory["scratchpad"].get("matmul", memory["output"])
