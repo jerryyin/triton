@@ -58,7 +58,7 @@ def is_consan_supported(arch):
 
 
 def disable_real_true16_feature(arch):
-    return '-real-true16' if arch.startswith('gfx11') else ''
+    return '-real-true16' if arch.startswith('gfx11') or arch == 'gfx1250' else ''
 
 
 def _parse_llvm_fn_attrs(attrs):
