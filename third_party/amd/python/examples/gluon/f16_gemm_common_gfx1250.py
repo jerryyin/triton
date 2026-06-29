@@ -185,17 +185,16 @@ def issue_wmma(consumer, a_buffer, a_layout: ttgl.constexpr, b_buffer, b_layout:
     """
     For multi-CTA configurations, we want warps within the CGA (cluster) to stay temporally aligned so we can
     multicast data to multiple CTAs.
-    We do this by signaling the cluster barrier before `async_wait` (which inserts a CTA barrier), then waiting
-    for the cluster barrier to complete. This keeps warps of a CGA within one iteration of each other.
-    It can also improve latency hiding by overlapping the cluster and CTA barriers.
+    We do this by draining this CTA's async loads (`async_wait`) first so the data is ready, then signaling the
+    cluster barrier (`arrive`) and waiting for the cluster (`wait`). This keeps warps of a CGA within one
+    iteration of each other. The `async_wait` must not sit between `arrive` and `wait`: a CTA that signals
+    arrival and then stalls on its load counter inside the barrier window can hang on real HW.
     """
     num_ctas: ttgl.constexpr = ttgl.num_ctas()
-    if num_ctas > 1:
-        ttgl.amd.gfx1250.cluster.arrive()
-
     ttgl.amd.gfx1250.tdm.async_wait(wait_producers_cnt)
 
     if num_ctas > 1:
+        ttgl.amd.gfx1250.cluster.arrive()
         ttgl.amd.gfx1250.cluster.wait()
 
     a = a_buffer.index(consumer % NUM_BUFFERS).load(layout=a_layout)
@@ -207,6 +206,74 @@ def issue_wmma(consumer, a_buffer, a_layout: ttgl.constexpr, b_buffer, b_layout:
     accumulator = ttgl.amd.gfx1250.wmma(a, b, accumulator)
     consumer += 1
     return consumer, accumulator
+
+
+@gluon.jit
+def slicemn_wait(wait_cnt):
+    """Cluster-gated TDM wait for the sliceMN region schedule.
+
+    Mirrors the sync in issue_wmma: drain this CTA's async loads first, then arrive at
+    and wait on the cluster barrier, so warps of a CGA stay within one iteration of each
+    other (multicast alignment). The async_wait must not sit between arrive and wait or a
+    CTA can hang on real HW. Single-CTA runs emit no cluster ops."""
+    num_ctas: ttgl.constexpr = ttgl.num_ctas()
+    ttgl.amd.gfx1250.tdm.async_wait(wait_cnt)
+    if num_ctas > 1:
+        ttgl.amd.gfx1250.cluster.arrive()
+        ttgl.amd.gfx1250.cluster.wait()
+
+
+@gluon.jit
+def slicemn_load_a(slot_buffer, start, a_layout: ttgl.constexpr, HALF_M: ttgl.constexpr):
+    """Load one A sub-tile (HALF_M rows) from a resident LDS slot via .slice() along the M dim."""
+    return slot_buffer.slice(start, HALF_M, 0).load(layout=a_layout)
+
+
+@gluon.jit
+def slicemn_load_b(slot_buffer, start, b_layout: ttgl.constexpr, HALF_N: ttgl.constexpr, TRANSPOSE_B: ttgl.constexpr):
+    """Load one B sub-tile (HALF_N cols) from a resident LDS slot. Non-transposed B slices the
+    N dim (1); transposed B slices the stored-N dim (0) then permutes, mirroring lds_subtile_load."""
+    if not TRANSPOSE_B:
+        return slot_buffer.slice(start, HALF_N, 1).load(layout=b_layout)
+    else:
+        return slot_buffer.slice(start, HALF_N, 0).permute([1, 0]).load(layout=b_layout)
+
+
+@gluon.jit
+def slicemn_subtile_load(sa, sb, a_layout: ttgl.constexpr, b_layout: ttgl.constexpr, QM_OFF: ttgl.constexpr,
+                         QN_OFF: ttgl.constexpr, K_OFF: ttgl.constexpr, HALF_M: ttgl.constexpr, HALF_N: ttgl.constexpr,
+                         SUBTILE_LEN: ttgl.constexpr, TRANSPOSE_B: ttgl.constexpr):
+    """Load one quadrant's K-sub-slice from a resident LDS slot: A rows [QM_OFF:+HALF_M] x K
+    [K_OFF:+SUBTILE_LEN], B K [K_OFF:+SUBTILE_LEN] x N cols [QN_OFF:+HALF_N]. Double slice (M/N
+    quadrant + K subtile). Single-CTA only (slices M/N). sa/sb are a_buffer.index(slot) etc."""
+    a = sa.slice(QM_OFF, HALF_M, 0).slice(K_OFF, SUBTILE_LEN, 1).load(layout=a_layout)
+    if not TRANSPOSE_B:
+        b = sb.slice(K_OFF, SUBTILE_LEN, 0).slice(QN_OFF, HALF_N, 1).load(layout=b_layout)
+    else:
+        b = sb.slice(QN_OFF, HALF_N, 0).slice(K_OFF, SUBTILE_LEN, 1).permute([1, 0]).load(layout=b_layout)
+    return a, b
+
+
+@gluon.jit
+def slicemn_quad_consume(consumer, a_buffer, a_layout: ttgl.constexpr, b_buffer, b_layout: ttgl.constexpr, acc,
+                         wait_cnt, NUM_BUFFERS: ttgl.constexpr, TRANSPOSE_B: ttgl.constexpr, QM_OFF: ttgl.constexpr,
+                         QN_OFF: ttgl.constexpr, HALF_M: ttgl.constexpr, HALF_N: ttgl.constexpr):
+    """One k-iteration of ONE accumulator quadrant: wait, load this quadrant's A/B sub-slices
+    (rows [QM_OFF:QM_OFF+HALF_M], cols [QN_OFF:QN_OFF+HALF_N]) from the ready buffer slot, and
+    accumulate into the single HALF_M x HALF_N accumulator.
+
+    Sequential-quad processing keeps only ONE quadrant accumulator live at a time. The LLVM
+    backend allocates that far better than one monolithic BLOCK_M x BLOCK_N accumulator, whose
+    huge live range pushes it into the register-spill regime -- this is the VGPR-reduction
+    purpose of quad splitting (mirrors the general-gemm quad at f16_gemm_gfx1250.py:1308 and the
+    remainder's wc_ksplit_tile_quad)."""
+    slicemn_wait(wait_cnt)
+    sa = a_buffer.index(consumer % NUM_BUFFERS)
+    sb = b_buffer.index(consumer % NUM_BUFFERS)
+    a = slicemn_load_a(sa, QM_OFF, a_layout, HALF_M)
+    b = slicemn_load_b(sb, QN_OFF, b_layout, HALF_N, TRANSPOSE_B)
+    acc = ttgl.amd.gfx1250.wmma(a, b, acc)
+    return consumer + 1, acc
 
 
 @gluon.jit
@@ -345,3 +412,97 @@ class TileScheduler:
     def apply_chiplet_transform_chunked(self, pid, num_sms, num_xcds: ttgl.constexpr, chunk_size: ttgl.constexpr):
         """Apply chunked chiplet transformation for improved cache locality."""
         return chiplet_transform_chunked(pid, num_sms, num_xcds, chunk_size)
+
+
+@gluon.jit
+def wc_ksplit_tile(a_ptr, b_ptr, c_ptr, scr_ptr, scr_cga, off_m, off_n,  #
+                   M, N, K, stride_am, stride_ak, stride_bk, stride_bn, stride_cm, stride_cn,  #
+                   BLOCK_M: ttgl.constexpr, BLOCK_N: ttgl.constexpr, BLOCK_K: ttgl.constexpr, NUM_CTAS: ttgl.constexpr,
+                   K_WIDTH: ttgl.constexpr, load3d: ttgl.constexpr, wmma3d: ttgl.constexpr, c2d: ttgl.constexpr):
+    """Compute one output tile [off_m:off_m+BLOCK_M, off_n:off_n+BLOCK_N] via within-cluster
+    K-split + lock-free reduce. The cluster's NUM_CTAS CTAs each take a K-slice and compute a
+    partial through a rank-3 batched dot (batch dim = CGA-split, one slab per CTA), store the
+    partials to this CGA's scratch region, sync once, then every CTA sums all slabs (multicast
+    loads off the broadcast c2d layout) and one CTA writes C. Degenerates to NUM_CTAS==1."""
+    # 3D layouts -> per-axis 1D layouts (batch / dim1 / dim2 for loads and wmma; M/N for c2d).
+    lb: ttgl.constexpr = ttgl.SliceLayout(1, ttgl.SliceLayout(2, load3d))
+    l1: ttgl.constexpr = ttgl.SliceLayout(0, ttgl.SliceLayout(2, load3d))
+    l2: ttgl.constexpr = ttgl.SliceLayout(0, ttgl.SliceLayout(1, load3d))
+    wb: ttgl.constexpr = ttgl.SliceLayout(1, ttgl.SliceLayout(2, wmma3d))
+    w1: ttgl.constexpr = ttgl.SliceLayout(0, ttgl.SliceLayout(2, wmma3d))
+    w2: ttgl.constexpr = ttgl.SliceLayout(0, ttgl.SliceLayout(1, wmma3d))
+    cm = ttgl.arange(0, BLOCK_M, layout=ttgl.SliceLayout(1, c2d))
+    cn = ttgl.arange(0, BLOCK_N, layout=ttgl.SliceLayout(0, c2d))
+
+    # Even K-iteration split across the cluster's CTAs; ragged tail handled by masking.
+    total_iters = ttgl.cdiv(K, BLOCK_K)
+    base = total_iters // NUM_CTAS
+    rem = total_iters % NUM_CTAS
+    cta = ttgl.arange(0, NUM_CTAS, layout=lb)
+    k_start = cta * base + ttgl.minimum(cta, rem)
+    k_end = k_start + base + (cta < rem).to(ttgl.int32)
+    om = ttgl.arange(0, BLOCK_M, layout=l1)
+    ak = ttgl.arange(0, BLOCK_K, layout=l2)
+    bk = ttgl.arange(0, BLOCK_K, layout=l1)
+    on = ttgl.arange(0, BLOCK_N, layout=l2)
+
+    # Stage 1: each CTA computes its K-slice partial. Loop the max slice length across CTAs
+    # CTAs with a shorter slice mask off their tail via `kit < k_end`.
+    max_local_iters = ttgl.cdiv(total_iters, NUM_CTAS)
+    acc = ttgl.zeros((NUM_CTAS, BLOCK_M, BLOCK_N), dtype=ttgl.float32, layout=wmma3d)
+    for ki in range(max_local_iters):
+        kit = k_start[:, None, None] + ki
+        ka = kit * BLOCK_K + ak[None, None, :]
+        offs_a = stride_am * (off_m + om[None, :, None]) + stride_ak * ka
+        mask_a = (kit < k_end[:, None, None]) & (ka < K) & ((off_m + om[None, :, None]) < M)
+        at = ttgl.load(a_ptr + offs_a, mask=mask_a, other=0.0)
+        kb = kit * BLOCK_K + bk[None, :, None]
+        offs_b = stride_bk * kb + stride_bn * (off_n + on[None, None, :])
+        mask_b = (kit < k_end[:, None, None]) & (kb < K) & ((off_n + on[None, None, :]) < N)
+        bt = ttgl.load(b_ptr + offs_b, mask=mask_b, other=0.0)
+        at = ttgl.convert_layout(at, ttgl.DotOperandLayout(0, wmma3d, K_WIDTH))
+        bt = ttgl.convert_layout(bt, ttgl.DotOperandLayout(1, wmma3d, K_WIDTH))
+        acc = ttgl.amd.gfx1250.wmma(at, bt, acc)
+
+    sb = ttgl.arange(0, NUM_CTAS, layout=wb)
+    sm = ttgl.arange(0, BLOCK_M, layout=w1)
+    sn = ttgl.arange(0, BLOCK_N, layout=w2)
+    soff = scr_cga + sb[:, None, None] * (BLOCK_M * BLOCK_N) + sm[None, :, None] * BLOCK_N + sn[None, None, :]
+    ttgl.store(scr_ptr + soff, acc)
+    ttgl.barrier()  # CTA-level: scratch round-trip needs cross-warp visibility even at NUM_CTAS==1
+    if NUM_CTAS > 1:
+        ttgl.amd.gfx1250.cluster.arrive()
+        ttgl.amd.gfx1250.cluster.wait()
+
+    # Stage 2: every CTA sums all slabs (multicast loads), one CTA stores C.
+    red = ttgl.zeros((BLOCK_M, BLOCK_N), dtype=ttgl.float32, layout=c2d)
+    for cc in ttgl.static_range(NUM_CTAS):
+        roff = scr_cga + cc * (BLOCK_M * BLOCK_N) + cm[:, None] * BLOCK_N + cn[None, :]
+        red += ttgl.load(scr_ptr + roff)
+    offs_c = stride_cm * (off_m + cm[:, None]) + stride_cn * (off_n + cn[None, :])
+    mask_c = ((off_m + cm[:, None]) < M) & ((off_n + cn[None, :]) < N)
+    ttgl.store(c_ptr + offs_c, red, mask=mask_c)
+    ttgl.barrier()  # CTA-level: scratch round-trip needs cross-warp visibility even at NUM_CTAS==1
+    if NUM_CTAS > 1:
+        ttgl.amd.gfx1250.cluster.arrive()
+        ttgl.amd.gfx1250.cluster.wait()
+
+
+@gluon.jit
+def wc_ksplit_tile_quad(a_ptr, b_ptr, c_ptr, scr_ptr, scr_cga, off_m, off_n,  #
+                        M, N, K, stride_am, stride_ak, stride_bk, stride_bn, stride_cm, stride_cn,  #
+                        BLOCK_M: ttgl.constexpr, BLOCK_N: ttgl.constexpr, BLOCK_K: ttgl.constexpr,
+                        NUM_CTAS: ttgl.constexpr, K_WIDTH: ttgl.constexpr, load3d: ttgl.constexpr,
+                        wmma3d: ttgl.constexpr, c2d: ttgl.constexpr):
+    """Quad-split wrapper for wc_ksplit_tile: process the output tile as 2x2 HALF_M x HALF_N
+    sub-blocks to cap register pressure (the full-tile acc/reduce buffers are the dominant VGPR
+    cost at large tiles). load3d/wmma3d/c2d MUST be sized for HALF_M x HALF_N. The scr_cga
+    region is reused across sub-blocks; the trailing cluster barrier in each wc_ksplit_tile
+    makes that reuse safe."""
+    HALF_M: ttgl.constexpr = BLOCK_M // 2
+    HALF_N: ttgl.constexpr = BLOCK_N // 2
+    for qm in ttgl.static_range(2):
+        for qn in ttgl.static_range(2):
+            wc_ksplit_tile(a_ptr, b_ptr, c_ptr, scr_ptr, scr_cga, off_m + qm * HALF_M, off_n + qn * HALF_N, M, N, K,
+                           stride_am, stride_ak, stride_bk, stride_bn, stride_cm, stride_cn, HALF_M, HALF_N, BLOCK_K,
+                           NUM_CTAS, K_WIDTH, load3d, wmma3d, c2d)
