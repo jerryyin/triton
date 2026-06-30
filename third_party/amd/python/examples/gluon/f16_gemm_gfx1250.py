@@ -421,7 +421,8 @@ def gemm_tdm_pipelined_single_warp_per_simd_schedule_kernel(a_ptr, b_ptr, c_ptr,
 
 
 def _run_runtime_gemm_tdm_pipelined(BLOCK_M, BLOCK_N, BLOCK_K, NUM_BUFFERS, TRANSPOSE_B, PERSISTENT, PREFETCH,
-                                    L2_PREFETCH_DISTANCE, M, N, K, num_warps, ctas_per_cga, ACTIVATION=""):
+                                    L2_PREFETCH_DISTANCE, M, N, K, num_warps, ctas_per_cga, ACTIVATION="",
+                                    BENCHMARK=False):
     if triton.cdiv(K, BLOCK_K) < NUM_BUFFERS:
         pytest.skip("Skip tests where K/BLOCK_K < NUM_BUFFERS")
 
@@ -466,10 +467,11 @@ def _run_runtime_gemm_tdm_pipelined(BLOCK_M, BLOCK_N, BLOCK_K, NUM_BUFFERS, TRAN
     SHARED_LAYOUT_A, SHARED_LAYOUT_B, ACCUMULATOR_LAYOUT = _build_gemm_layouts(BLOCK_M, BLOCK_N_PACKED, BLOCK_K,
                                                                                cga_layout_c, warp_bases, TRANSPOSE_B)
 
+    fn = None
     if not PERSISTENT:
 
         grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1)
-        kernel = gemm_tdm_pipelined_kernel[grid](
+        fn = lambda: gemm_tdm_pipelined_kernel[grid](
             a_device, b_device, c_device,  #
             M, N, K,  #
             stride_am, stride_ak,  #
@@ -478,16 +480,15 @@ def _run_runtime_gemm_tdm_pipelined(BLOCK_M, BLOCK_N, BLOCK_K, NUM_BUFFERS, TRAN
             BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,  #
             NUM_BUFFERS=NUM_BUFFERS, TRANSPOSE_B=TRANSPOSE_B,  #
             SHARED_LAYOUT_A=SHARED_LAYOUT_A, SHARED_LAYOUT_B=SHARED_LAYOUT_B, ACCUMULATOR_LAYOUT=ACCUMULATOR_LAYOUT,
-            num_warps=num_warps, waves_per_eu=num_warps // 4, num_ctas=num_ctas,
-            L2_PREFETCH_DISTANCE=L2_PREFETCH_DISTANCE, ACTIVATION=ACTIVATION)
-        static_profile(kernel)
+            num_warps=num_warps, waves_per_eu=num_warps // 4, num_ctas=num_ctas, L2_PREFETCH_DISTANCE=
+            L2_PREFETCH_DISTANCE, ACTIVATION=ACTIVATION)
     else:
         # num_sms = torch.cuda.get_device_properties("cuda").multi_processor_count
         # NOTE: Explicitly set num_sms to small number to ensure that each CU will compute multiple tiles.
         num_sms = 8
         grid = (min(num_sms, triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N)), 1)
         if PREFETCH:
-            kernel = persistent_gemm_tdm_pipelined_lds_prefetch_kernel[grid](
+            fn = lambda: persistent_gemm_tdm_pipelined_lds_prefetch_kernel[grid](
                 a_device, b_device, c_device,  #
                 M, N, K,  #
                 stride_am, stride_ak,  #
@@ -496,11 +497,10 @@ def _run_runtime_gemm_tdm_pipelined(BLOCK_M, BLOCK_N, BLOCK_K, NUM_BUFFERS, TRAN
                 BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,  #
                 NUM_BUFFERS=NUM_BUFFERS, TRANSPOSE_B=TRANSPOSE_B,  #
                 SHARED_LAYOUT_A=SHARED_LAYOUT_A, SHARED_LAYOUT_B=SHARED_LAYOUT_B, ACCUMULATOR_LAYOUT=ACCUMULATOR_LAYOUT,
-                num_warps=num_warps, num_ctas=num_ctas, waves_per_eu=num_warps // 4,
-                L2_PREFETCH_DISTANCE=L2_PREFETCH_DISTANCE, ACTIVATION=ACTIVATION)
-            static_profile(kernel)
+                num_warps=num_warps, num_ctas=num_ctas, waves_per_eu=num_warps // 4, L2_PREFETCH_DISTANCE=
+                L2_PREFETCH_DISTANCE, ACTIVATION=ACTIVATION)
         else:
-            kernel = persistent_gemm_tdm_pipelined_kernel[grid](
+            fn = lambda: persistent_gemm_tdm_pipelined_kernel[grid](
                 a_device, b_device, c_device,  #
                 M, N, K,  #
                 stride_am, stride_ak,  #
@@ -509,9 +509,20 @@ def _run_runtime_gemm_tdm_pipelined(BLOCK_M, BLOCK_N, BLOCK_K, NUM_BUFFERS, TRAN
                 BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,  #
                 NUM_BUFFERS=NUM_BUFFERS, TRANSPOSE_B=TRANSPOSE_B,  #
                 SHARED_LAYOUT_A=SHARED_LAYOUT_A, SHARED_LAYOUT_B=SHARED_LAYOUT_B, ACCUMULATOR_LAYOUT=ACCUMULATOR_LAYOUT,
-                num_warps=num_warps, num_ctas=num_ctas, waves_per_eu=num_warps // 4,
-                L2_PREFETCH_DISTANCE=L2_PREFETCH_DISTANCE, ACTIVATION=ACTIVATION)
-            static_profile(kernel)
+                num_warps=num_warps, num_ctas=num_ctas, waves_per_eu=num_warps // 4, L2_PREFETCH_DISTANCE=
+                L2_PREFETCH_DISTANCE, ACTIVATION=ACTIVATION)
+
+    assert fn is not None
+    bench_repeats = 32
+    if BENCHMARK == 'graph':
+        time = triton.testing.do_bench_cudagraph(fn, rep=bench_repeats)
+        print(f'execution time: {time} ms')
+    elif BENCHMARK == 'eager':
+        time = triton.testing.do_bench(fn, warmup=10, rep=bench_repeats)
+        print(f'execution time: {time} ms')
+    else:
+        kernel = fn()
+        static_profile(kernel)
 
     c_triton = c_device.cpu()
 
@@ -597,7 +608,8 @@ def test_runtime_swiglu_gemm_tdm_pipelined(BLOCK_M, BLOCK_N, BLOCK_K, NUM_BUFFER
 @pytest.mark.parametrize("M,N,K", [(256, 256, 512), (250, 250, 510)])
 @pytest.mark.parametrize("ctas_per_cga", [[1, 1]])
 def test_runtime_gemm_tdm_pipelined_single_warp_per_simd_schedule(BLOCK_M, BLOCK_N, NUM_BUFFERS, TRANSPOSE_B,
-                                                                  L2_PREFETCH_DISTANCE, M, N, K, ctas_per_cga):
+                                                                  L2_PREFETCH_DISTANCE, M, N, K, ctas_per_cga,
+                                                                  BENCHMARK=False):
     num_warps = 4
     BLOCK_K = 128  # 4 subtiles * 32 (wmma kdim)
 
@@ -625,7 +637,7 @@ def test_runtime_gemm_tdm_pipelined_single_warp_per_simd_schedule(BLOCK_M, BLOCK
     WMMA_LAYOUT: ttgl.constexpr = ttgl.amd.AMDWMMALayout(3, True, warp_bases, [], [16, 16, 32], cga_layout_c)
 
     grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1)
-    kernel = gemm_tdm_pipelined_single_warp_per_simd_schedule_kernel[grid](
+    fn = lambda: gemm_tdm_pipelined_single_warp_per_simd_schedule_kernel[grid](
         a_device, b_device, c_device,  #
         M, N, K,  #
         stride_am, stride_ak,  #
@@ -633,9 +645,19 @@ def test_runtime_gemm_tdm_pipelined_single_warp_per_simd_schedule(BLOCK_M, BLOCK
         stride_cm, stride_cn,  #
         BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,  #
         NUM_BUFFERS=NUM_BUFFERS, TRANSPOSE_B=TRANSPOSE_B,  #
-        num_warps=num_warps, WARP_BASES=tuple(warp_bases), waves_per_eu=num_warps // 4,
-        L2_PREFETCH_DISTANCE=L2_PREFETCH_DISTANCE, WMMA_LAYOUT=WMMA_LAYOUT, num_ctas=num_ctas)
-    static_profile(kernel)
+        num_warps=num_warps, WARP_BASES=tuple(warp_bases), waves_per_eu=num_warps // 4, L2_PREFETCH_DISTANCE=
+        L2_PREFETCH_DISTANCE, WMMA_LAYOUT=WMMA_LAYOUT, num_ctas=num_ctas)
+
+    bench_repeats = 32
+    if BENCHMARK == 'graph':
+        time = triton.testing.do_bench_cudagraph(fn, rep=bench_repeats)
+        print(f'execution time: {time} ms')
+    elif BENCHMARK == 'eager':
+        time = triton.testing.do_bench(fn, warmup=10, rep=bench_repeats)
+        print(f'execution time: {time} ms')
+    else:
+        kernel = fn()
+        static_profile(kernel)
 
     c_triton = c_device.cpu()
     c_torch = a.to(torch.float32) @ (b.to(torch.float32) if not TRANSPOSE_B else b.T.to(torch.float32))
@@ -940,7 +962,7 @@ def gemm_tdm_warp_specialized_kernel(a_ptr, b_ptr, c_ptr,  #
 @pytest.mark.parametrize("M,N,K", [(256, 256, 512), (250, 250, 510)])
 @pytest.mark.parametrize("NUM_TOTAL_WARPS", [8, 12, 16])
 def test_runtime_gemm_tdm_warp_specialized(BLOCK_M, BLOCK_N, BLOCK_K, NUM_BUFFERS, TRANSPOSE_B, PERSISTENT, M, N, K,
-                                           NUM_TOTAL_WARPS):
+                                           NUM_TOTAL_WARPS, BENCHMARK=False):
     """Test warp specialized GEMM kernel."""
     if PERSISTENT and NUM_TOTAL_WARPS != 12:
         pytest.skip("Persistent WS kernel uses 12 total warps")
@@ -966,6 +988,7 @@ def test_runtime_gemm_tdm_warp_specialized(BLOCK_M, BLOCK_N, BLOCK_K, NUM_BUFFER
     b_device = b.cuda()
     c_device = c.cuda()
 
+    fn = None
     if not PERSISTENT:
         warp_bases = [(0, 1)]
         for i in range(int(math.log2(NUM_TOTAL_WARPS // 4))):
@@ -973,7 +996,7 @@ def test_runtime_gemm_tdm_warp_specialized(BLOCK_M, BLOCK_N, BLOCK_K, NUM_BUFFER
         warp_bases = tuple(warp_bases)
 
         grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), 1)
-        kernel = gemm_tdm_warp_specialized_kernel[grid](
+        fn = lambda: gemm_tdm_warp_specialized_kernel[grid](
             a_device, b_device, c_device,  #
             M, N, K,  #
             stride_am, stride_ak,  #
@@ -997,7 +1020,7 @@ def test_runtime_gemm_tdm_warp_specialized(BLOCK_M, BLOCK_N, BLOCK_K, NUM_BUFFER
         num_sms = 8
         grid = (min(num_sms, num_tiles), 1)
 
-        kernel = persistent_gemm_tdm_warp_specialized_kernel[grid](
+        fn = lambda: persistent_gemm_tdm_warp_specialized_kernel[grid](
             a_device, b_device, c_device,  #
             M, N, K,  #
             stride_am, stride_ak,  #
@@ -1008,7 +1031,16 @@ def test_runtime_gemm_tdm_warp_specialized(BLOCK_M, BLOCK_N, BLOCK_K, NUM_BUFFER
             WARP_BASES=tuple(warp_bases),  #
             num_warps=NUM_TOTAL_WARPS // 3)
 
-    static_profile(kernel)
+    bench_repeats = 32
+    if BENCHMARK == 'graph':
+        time = triton.testing.do_bench_cudagraph(fn, rep=bench_repeats)
+        print(f'execution time: {time} ms')
+    elif BENCHMARK == 'eager':
+        time = triton.testing.do_bench(fn, warmup=10, rep=bench_repeats)
+        print(f'execution time: {time} ms')
+    else:
+        kernel = fn()
+        static_profile(kernel)
 
     c_triton = c_device.cpu()
     c_torch = a.to(torch.float32) @ (b.to(torch.float32) if not TRANSPOSE_B else b.T.to(torch.float32))
@@ -1022,7 +1054,7 @@ def test_runtime_gemm_tdm_warp_specialized(BLOCK_M, BLOCK_N, BLOCK_K, NUM_BUFFER
 @pytest.mark.parametrize("M,N,K", [(1024, 1024, 512)])
 @pytest.mark.parametrize("NUM_TOTAL_WARPS", [12])
 def test_runtime_gemm_tdm_warp_specialized_subtiled(BLOCK_M, BLOCK_N, BLOCK_K, NUM_BUFFERS, TRANSPOSE_B, PERSISTENT, M,
-                                                    N, K, NUM_TOTAL_WARPS):
+                                                    N, K, NUM_TOTAL_WARPS, BENCHMARK=False):
     """Test warp specialized GEMM kernel (subtiled variant for large blocks)."""
     if triton.cdiv(K, BLOCK_K) < NUM_BUFFERS:
         pytest.skip("Skip tests where K/BLOCK_K < NUM_BUFFERS")
@@ -1055,7 +1087,7 @@ def test_runtime_gemm_tdm_warp_specialized_subtiled(BLOCK_M, BLOCK_N, BLOCK_K, N
         warp_bases.append((1 << i, 0))
     warp_bases = tuple(warp_bases)
 
-    kernel = persistent_gemm_tdm_warp_specialized_subtiled_kernel[grid](
+    fn = lambda: persistent_gemm_tdm_warp_specialized_subtiled_kernel[grid](
         a_device, b_device, c_device,  #
         M, N, K,  #
         stride_am, stride_ak,  #
@@ -1066,7 +1098,16 @@ def test_runtime_gemm_tdm_warp_specialized_subtiled(BLOCK_M, BLOCK_N, BLOCK_K, N
         WARP_BASES=warp_bases,  #
         num_warps=NUM_TOTAL_WARPS // 3)
 
-    static_profile(kernel)
+    bench_repeats = 32
+    if BENCHMARK == 'graph':
+        time = triton.testing.do_bench_cudagraph(fn, rep=bench_repeats)
+        print(f'execution time: {time} ms')
+    elif BENCHMARK == 'eager':
+        time = triton.testing.do_bench(fn, warmup=10, rep=bench_repeats)
+        print(f'execution time: {time} ms')
+    else:
+        kernel = fn()
+        static_profile(kernel)
 
     c_triton = c_device.cpu()
     c_torch = a.to(torch.float32) @ (b.to(torch.float32) if not TRANSPOSE_B else b.T.to(torch.float32))
@@ -1606,6 +1647,12 @@ if __name__ == "__main__":
     parser.add_argument("--warp-specialized", action="store_true", help="Use warp specialized variant")
     parser.add_argument("--subtiled", action="store_true", help="Use subtiled quadrant processing")
     parser.add_argument("--activation", type=str, default="", choices=["", "swiglu"], help="Fused activation epilogue")
+    parser.add_argument(
+        "--benchmark-mode",
+        choices=("graph", "eager", "none"),
+        default="none",
+        help="Timing method. `graph` uses triton.testing.do_bench_cudagraph.",
+    )
     args = parser.parse_args()
 
     assert not (args.persistent and args.single_warp_schedule)
@@ -1631,6 +1678,7 @@ if __name__ == "__main__":
     PREFETCH = args.prefetch_lds
     L2_PREFETCH_DISTANCE = args.prefetch_l2_distance
     ACTIVATION = args.activation
+    BENCHMARK = None if args.benchmark_mode == "none" else args.benchmark_mode
 
     if NUM_CTAS not in [1, 2, 4, 8, 16]:
         raise ValueError(f"NUM_CTAS (product of CTAS_PER_CGA) {NUM_CTAS} not supported")
@@ -1659,7 +1707,8 @@ if __name__ == "__main__":
             )
             test_runtime_gemm_tdm_warp_specialized_subtiled(BLOCK_M, BLOCK_N, BLOCK_K,  #
                                                             NUM_BUFFERS, TRANSPOSE_B, PERSISTENT,  #
-                                                            M, N, K, NUM_WARPS)
+                                                            M, N, K, NUM_WARPS,  #
+                                                            BENCHMARK)
         else:
             BLOCK_M, BLOCK_N, BLOCK_K = 32, 32, 64
             print(f"Limited block size support; resetting to {BLOCK_M=}, {BLOCK_N=}, {BLOCK_K=}")
@@ -1670,18 +1719,20 @@ if __name__ == "__main__":
             )
             test_runtime_gemm_tdm_warp_specialized(BLOCK_M, BLOCK_N, BLOCK_K,  #
                                                    NUM_BUFFERS, TRANSPOSE_B, PERSISTENT,  #
-                                                   M, N, K, NUM_WARPS)
+                                                   M, N, K, NUM_WARPS,  #
+                                                   BENCHMARK)
     elif args.single_warp_schedule:
         print(
             f"({M=}, {N=}, {K=}), ({BLOCK_M=}, {BLOCK_N=}, {BLOCK_K=}), {TRANSPOSE_B=}, {NUM_WARPS=}, {NUM_BUFFERS=}, {PERSISTENT=}, {PREFETCH=}, {L2_PREFETCH_DISTANCE=}"
         )
         test_runtime_gemm_tdm_pipelined_single_warp_per_simd_schedule(BLOCK_M, BLOCK_N,  #
                                                                       NUM_BUFFERS, TRANSPOSE_B, L2_PREFETCH_DISTANCE,  #
-                                                                      M, N, K, CTAS_PER_CGA)
+                                                                      M, N, K, CTAS_PER_CGA,  #
+                                                                      BENCHMARK)
     else:
         print(
             f"({M=}, {N=}, {K=}), ({BLOCK_M=}, {BLOCK_N=}, {BLOCK_K=}), {TRANSPOSE_B=}, {NUM_WARPS=}, {NUM_BUFFERS=}, {PERSISTENT=}, {PREFETCH=}, {L2_PREFETCH_DISTANCE=}, {CTAS_PER_CGA=}, {ACTIVATION=}"
         )
         _run_runtime_gemm_tdm_pipelined(BLOCK_M, BLOCK_N, BLOCK_K,  #
                                         NUM_BUFFERS, TRANSPOSE_B, PERSISTENT, PREFETCH, L2_PREFETCH_DISTANCE,  #
-                                        M, N, K, NUM_WARPS, CTAS_PER_CGA, ACTIVATION=ACTIVATION)
+                                        M, N, K, NUM_WARPS, CTAS_PER_CGA, ACTIVATION=ACTIVATION, BENCHMARK=BENCHMARK)

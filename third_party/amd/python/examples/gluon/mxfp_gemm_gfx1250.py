@@ -1554,9 +1554,10 @@ def interleave_b_scale_rows(s_gate, s_up):
 @pytest.mark.parametrize("GROUP_SIZE_M", [8])
 @pytest.mark.parametrize("PINGPONG", [True, False])
 @pytest.mark.parametrize("L2_PREFETCH_DISTANCE", [-1, 0, 2])
+@pytest.mark.parametrize("BENCHMARK", [None])
 def test_runtime_mxgemm_tdm_8warps_pipeline(DTYPE_A, DTYPE_B, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, TRANSPOSE_B,
                                             NUM_BUFFERS, SCALE_PRESHUFFLE, WITH_A_SCALE, SCHEDULE, ASYNC_COPY_SCALE,
-                                            GROUP_SIZE_M, PINGPONG, L2_PREFETCH_DISTANCE):
+                                            GROUP_SIZE_M, PINGPONG, L2_PREFETCH_DISTANCE, BENCHMARK):
     SCALE_BLOCK = 32
     numWarps = 8
     numCtas = 1
@@ -1630,25 +1631,34 @@ def test_runtime_mxgemm_tdm_8warps_pipeline(DTYPE_A, DTYPE_B, M, N, K, BLOCK_M, 
 
     dtype_converter = {'float8_e5m2': "e5m2", "float8_e4m3": "e4m3", "float4": "e2m1"}
 
-    k = mxgemm_tdm_pipelined_kernel[grid](a_d, b_d, c_d, a_scale_d, b_scale_d, M, N, K, stride_am, stride_ak, stride_bk,
-                                          stride_bn, stride_cm, stride_cn, stride_scale, dtype_converter[DTYPE_A],
-                                          dtype_converter[DTYPE_B], SCALE_BLOCK, BLOCK_M, BLOCK_N, BLOCK_K,
-                                          GROUP_SIZE_M, TRANSPOSE_B, NUM_BUFFERS, SCALE_PRESHUFFLE, ASYNC_COPY_SCALE,
-                                          WITH_A_SCALE, SCHEDULE, numWarps, PINGPONG,
-                                          L2_PREFETCH_DISTANCE=L2_PREFETCH_DISTANCE, num_warps=numWarps,
-                                          num_ctas=numCtas, waves_per_eu=(numWarps // 4))
-    static_profile(k)
+    fn = lambda: mxgemm_tdm_pipelined_kernel[
+        grid](a_d, b_d, c_d, a_scale_d, b_scale_d, M, N, K, stride_am, stride_ak, stride_bk, stride_bn, stride_cm,
+              stride_cn, stride_scale, dtype_converter[DTYPE_A], dtype_converter[
+                  DTYPE_B], SCALE_BLOCK, BLOCK_M, BLOCK_N, BLOCK_K, GROUP_SIZE_M, TRANSPOSE_B, NUM_BUFFERS,
+              SCALE_PRESHUFFLE, ASYNC_COPY_SCALE, WITH_A_SCALE, SCHEDULE, numWarps, PINGPONG, L2_PREFETCH_DISTANCE=
+              L2_PREFETCH_DISTANCE, num_warps=numWarps, num_ctas=numCtas, waves_per_eu=(numWarps // 4))
 
-    if TRANSPOSE_B:
-        assert 'ds_load_u8' not in k.asm['amdgcn']
-
-    if L2_PREFETCH_DISTANCE >= 0:
-        assert 'global_prefetch_b8' in k.asm['amdgcn']
+    bench_repeats = 32
+    if BENCHMARK == 'graph':
+        time = triton.testing.do_bench_cudagraph(fn, rep=bench_repeats)
+        print(f'execution time: {time} ms')
+    elif BENCHMARK == 'eager':
+        time = triton.testing.do_bench(fn, warmup=10, rep=bench_repeats)
+        print(f'execution time: {time} ms')
     else:
-        assert 'global_prefetch_b8' not in k.asm['amdgcn']
+        k = fn()
+        static_profile(k)
 
-    torch.testing.assert_close(c_d.cpu(), c_ref.cpu(), rtol=1e-5, atol=1e-8)
-    print('✅Pass')
+        if TRANSPOSE_B:
+            assert 'ds_load_u8' not in k.asm['amdgcn']
+
+        if L2_PREFETCH_DISTANCE >= 0:
+            assert 'global_prefetch_b8' in k.asm['amdgcn']
+        else:
+            assert 'global_prefetch_b8' not in k.asm['amdgcn']
+
+        torch.testing.assert_close(c_d.cpu(), c_ref.cpu(), rtol=1e-5, atol=1e-8)
+        print('✅Pass')
 
 
 @pytest.mark.parametrize(
@@ -1672,9 +1682,10 @@ def test_runtime_mxgemm_tdm_8warps_pipeline(DTYPE_A, DTYPE_B, M, N, K, BLOCK_M, 
 @pytest.mark.parametrize("GROUP_SIZE_M", [8])
 @pytest.mark.parametrize("L2_PREFETCH_DISTANCE", [-1, 0, 2])
 @pytest.mark.parametrize("ACTIVATION", ['', 'swiglu'])
+@pytest.mark.parametrize("BENCHMARK", [None])
 def test_runtime_mxgemm_tdm_pipelined(DTYPE_A, DTYPE_B, M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, TRANSPOSE_B, NUM_BUFFERS,
                                       SCALE_PRESHUFFLE, WITH_A_SCALE, SCHEDULE, ASYNC_COPY_SCALE, GROUP_SIZE_M,
-                                      L2_PREFETCH_DISTANCE, ACTIVATION):
+                                      L2_PREFETCH_DISTANCE, ACTIVATION, BENCHMARK):
     """
     Pipelined mxfp GEMM with optional fused SwiGLU epilogue.
 
@@ -1793,34 +1804,43 @@ def test_runtime_mxgemm_tdm_pipelined(DTYPE_A, DTYPE_B, M, N, K, BLOCK_M, BLOCK_
 
     dtype_converter = {'float8_e5m2': "e5m2", "float8_e4m3": "e4m3", "float4": "e2m1"}
 
-    k = mxgemm_tdm_pipelined_kernel[grid](a_d, b_d, c_d, a_scale_d, b_scale_d, M, N, K, stride_am, stride_ak, stride_bk,
-                                          stride_bn, stride_cm, stride_cn, stride_scale, dtype_converter[DTYPE_A],
-                                          dtype_converter[DTYPE_B], SCALE_BLOCK, BLOCK_M, BLOCK_N, BLOCK_K,
-                                          GROUP_SIZE_M, TRANSPOSE_B, NUM_BUFFERS, SCALE_PRESHUFFLE, ASYNC_COPY_SCALE,
-                                          WITH_A_SCALE, SCHEDULE, NUM_WARPS=numWarps, PINGPONG=False,
-                                          L2_PREFETCH_DISTANCE=L2_PREFETCH_DISTANCE, ACTIVATION=ACTIVATION,
-                                          num_warps=numWarps, num_ctas=numCtas, waves_per_eu=numWarps // 4)
-    static_profile(k)
+    fn = lambda: mxgemm_tdm_pipelined_kernel[
+        grid](a_d, b_d, c_d, a_scale_d, b_scale_d, M, N, K, stride_am, stride_ak, stride_bk, stride_bn, stride_cm,
+              stride_cn, stride_scale, dtype_converter[DTYPE_A], dtype_converter[DTYPE_B], SCALE_BLOCK, BLOCK_M,
+              BLOCK_N, BLOCK_K, GROUP_SIZE_M, TRANSPOSE_B, NUM_BUFFERS, SCALE_PRESHUFFLE, ASYNC_COPY_SCALE,
+              WITH_A_SCALE, SCHEDULE, NUM_WARPS=numWarps, PINGPONG=False, L2_PREFETCH_DISTANCE=L2_PREFETCH_DISTANCE,
+              ACTIVATION=ACTIVATION, num_warps=numWarps, num_ctas=numCtas, waves_per_eu=numWarps // 4)
 
-    if TRANSPOSE_B:
-        assert 'ds_load_u8' not in k.asm['amdgcn']
-
-    if L2_PREFETCH_DISTANCE >= 0:
-        assert 'global_prefetch_b8' in k.asm['amdgcn']
+    bench_repeats = 32
+    if BENCHMARK == 'graph':
+        time = triton.testing.do_bench_cudagraph(fn, rep=bench_repeats)
+        print(f'execution time: {time} ms')
+    elif BENCHMARK == 'eager':
+        time = triton.testing.do_bench(fn, warmup=10, rep=bench_repeats)
+        print(f'execution time: {time} ms')
     else:
-        assert 'global_prefetch_b8' not in k.asm['amdgcn']
+        k = fn()
+        static_profile(k)
 
-    if is_fp4fp4:
-        assert 'v_wmma_scale_f32_32x16x128_f4' in k.asm['amdgcn']
-    else:
-        assert 'v_wmma_scale_f32_16x16x128_f8f6f4' in k.asm['amdgcn']
+        if TRANSPOSE_B:
+            assert 'ds_load_u8' not in k.asm['amdgcn']
 
-    # Relaxed tolerance for SwiGLU because of sigmoid/exp in the epilogue.
-    if IS_SWIGLU:
-        torch.testing.assert_close(c_d.cpu(), c_ref.cpu(), rtol=1e-2, atol=1e-2)
-    else:
-        torch.testing.assert_close(c_d.cpu(), c_ref.cpu(), rtol=1e-5, atol=1e-8)
-    print('✅Pass')
+        if L2_PREFETCH_DISTANCE >= 0:
+            assert 'global_prefetch_b8' in k.asm['amdgcn']
+        else:
+            assert 'global_prefetch_b8' not in k.asm['amdgcn']
+
+        if is_fp4fp4:
+            assert 'v_wmma_scale_f32_32x16x128_f4' in k.asm['amdgcn']
+        else:
+            assert 'v_wmma_scale_f32_16x16x128_f8f6f4' in k.asm['amdgcn']
+
+        # Relaxed tolerance for SwiGLU because of sigmoid/exp in the epilogue.
+        if IS_SWIGLU:
+            torch.testing.assert_close(c_d.cpu(), c_ref.cpu(), rtol=1e-2, atol=1e-2)
+        else:
+            torch.testing.assert_close(c_d.cpu(), c_ref.cpu(), rtol=1e-5, atol=1e-8)
+        print('✅Pass')
 
 
 @pytest.mark.parametrize("NUM_BUFFERS", [2, 3])
@@ -1856,8 +1876,15 @@ if __name__ == '__main__':
                         help='Prefetch distance (in iterations) for operands into L2. -1 disables L2 prefetch.')
     parser.add_argument('--activation', type=str, default='', choices=['', 'swiglu'],
                         help='Optional fused activation epilogue')
-
+    parser.add_argument(
+        "--benchmark-mode",
+        choices=("graph", "eager", "none"),
+        default="none",
+        help="Timing method. `graph` uses triton.testing.do_bench_cudagraph.",
+    )
     args = parser.parse_args()
+
+    BENCHMARK = None if args.benchmark_mode == "none" else args.benchmark_mode
 
     if args.pingpong:
         assert (args.num_warps == 8 and (args.schedule == 'baseline' or args.schedule == 'sliceK'))
@@ -1875,7 +1902,7 @@ if __name__ == '__main__':
                                                 ASYNC_COPY_SCALE=False,  #
                                                 GROUP_SIZE_M=args.group_size_m,  #
                                                 PINGPONG=args.pingpong,  #
-                                                L2_PREFETCH_DISTANCE=args.l2_prefetch_distance)
+                                                L2_PREFETCH_DISTANCE=args.l2_prefetch_distance, BENCHMARK=BENCHMARK)
     else:
         assert (args.num_buffers in (2, 3, 4))
         test_runtime_mxgemm_tdm_pipelined(args.dtype_a, args.dtype_b,  #
@@ -1889,4 +1916,4 @@ if __name__ == '__main__':
                                           ASYNC_COPY_SCALE=args.async_copy_scale,  #
                                           GROUP_SIZE_M=args.group_size_m,  #
                                           L2_PREFETCH_DISTANCE=args.l2_prefetch_distance,  #
-                                          ACTIVATION=args.activation)
+                                          ACTIVATION=args.activation, BENCHMARK=BENCHMARK)
