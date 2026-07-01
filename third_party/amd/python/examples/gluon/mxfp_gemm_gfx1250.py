@@ -1846,7 +1846,7 @@ def test_runtime_mxgemm_tdm_pipelined(DTYPE_A, DTYPE_B, M, N, K, BLOCK_M, BLOCK_
 @pytest.mark.parametrize("NUM_BUFFERS", [2, 3])
 def test_runtime_mxgemm_tdm_slicek_three_k_tiles(NUM_BUFFERS):
     test_runtime_mxgemm_tdm_pipelined('float8_e4m3', 'float8_e5m2', 256, 256, 768, 128, 128, 256, True, NUM_BUFFERS,
-                                      True, True, 'sliceK', False, 8, 0, '')
+                                      True, True, 'sliceK', False, 8, 0, '', None)
 
 
 if __name__ == '__main__':
