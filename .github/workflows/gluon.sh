@@ -78,7 +78,9 @@ HSA_MODEL_NUM_THREADS=2 pytest --count=1 -n 16 --durations=10 third_party/amd/py
     --deselect 'third_party/amd/python/examples/gluon/f16_gemm_streamk_gfx1250.py::test_streamk_gemm_tdm_4warps[False-258-258-510-False-4-32-32-64]' \
     --deselect 'third_party/amd/python/examples/gluon/f16_gemm_streamk_gfx1250.py::test_streamk_gemm_tdm_8warps[258-258-510-False-3-32-32-64]' \
     --deselect 'third_party/amd/python/examples/gluon/f16_gemm_streamk_gfx1250.py::test_streamk_gemm_tdm_8warps[258-258-510-True-3-32-32-64]'
-HSA_MODEL_NUM_THREADS=2 pytest --count=1 -n 16 --durations=10 third_party/amd/python/examples/gluon/stream_copy_gfx1250.py
+HSA_MODEL_NUM_THREADS=2 pytest --count=1 -n 2 --durations=10 \
+    'third_party/amd/python/examples/gluon/stream_babel_gfx1250.py::test_stream_copy[unary_N=32768]' \
+    'third_party/amd/python/examples/gluon/stream_babel_gfx1250.py::test_stream_copy[ternary_double_N=32768]'
 
 unset HSA_MODEL_ARGS
 # TODO: Fix failues in test_runtime_mxgemm_tdm_8warps_pipeline
