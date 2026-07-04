@@ -40,13 +40,13 @@ def is_coexec_scheduler_supported(arch):
 def is_coexec_scheduler_enabled(arch):
     if knobs.amd.use_coexec_scheduler is not None:
         return knobs.amd.use_coexec_scheduler
-    return arch in ["gfx1250"]
+    return False  #  arch in ["gfx1250"]
 
 
 def is_expert_scheduling_enabled(arch):
     if knobs.amd.use_expert_scheduling is not None:
         return knobs.amd.use_expert_scheduling
-    return arch in ["gfx1250"]
+    return False  #  arch in ["gfx1250"]
 
 
 def is_fpsan_supported(arch):
