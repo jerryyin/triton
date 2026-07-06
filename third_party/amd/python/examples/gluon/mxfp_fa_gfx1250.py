@@ -2181,7 +2181,7 @@ class BlockScaledAttentionProgram:
         self.issue_global_load_k(1, sub_idx=0, buf=1)  # ...................... iter 1
         self.issue_global_load_k_scale(1, buf=1)  # ........................... iter 1
 
-        self.async_wait(5)
+        self.async_wait(3)
         k0 = self.shared_load_k(sub_idx=0, buf=0)  # .......................... iter 0
         k0_scale = self.shared_load_k_scale(buf=0, slice=0)
         k1_scale = self.shared_load_k_scale(buf=0, slice=1)
@@ -2189,7 +2189,7 @@ class BlockScaledAttentionProgram:
 
         # pipeline prologue, iter -1
         qk0 = self.compute_qk(q, q_scale, k0, k0_scale, zero)  # .............. iter 0
-        self.async_wait(5)
+        self.async_wait(3)
         k1 = self.shared_load_k(sub_idx=1, buf=0)  # .......................... iter 0
         self.issue_global_load_v(0, sub_idx=0, buf=0)  # ...................... iter 0
         self.issue_global_load_v_scale(0, buf=0)  # ........................... iter 0
@@ -2204,7 +2204,7 @@ class BlockScaledAttentionProgram:
         self.issue_global_load_k(2, sub_idx=0, buf=0)  # ...................... iter 2
         self.issue_global_load_k_scale(2, buf=0)  # ........................... iter 2
 
-        self.async_wait(7)
+        self.async_wait(6)
         k0 = self.shared_load_k(sub_idx=0, buf=1)  # .......................... iter 1
         k0_scale = self.shared_load_k_scale(buf=1, slice=0)
         k1_scale = self.shared_load_k_scale(buf=1, slice=1)
@@ -2229,7 +2229,7 @@ class BlockScaledAttentionProgram:
                 acc0 = acc0 * expand_dims(alpha, -1)
                 acc1 = acc1 * expand_dims(alpha, -1)
 
-            self.async_wait(7)
+            self.async_wait(6)
             with warp_pipeline_stage("memory0"):
                 k1 = self.shared_load_k(sub_idx=1, buf=b)  # .................. iter i+1
                 self.issue_global_load_v(i + 1, sub_idx=0, buf=b)  # .......... iter i+1
@@ -2242,7 +2242,7 @@ class BlockScaledAttentionProgram:
                 l_i = l_i * alpha + l_ij
                 p, p_scale = self.downcast_p(p)
 
-            self.async_wait(7)
+            self.async_wait(6)
             with warp_pipeline_stage("memory1"):
                 v0 = self.shared_load_v(sub_idx=0, buf=a)  # .................. iter i
                 v0_scale = self.shared_load_v_scale(buf=a, slice=0)  # ........ iter i
@@ -2256,7 +2256,7 @@ class BlockScaledAttentionProgram:
                 m_ij = elementwise_max_prop_nan(m_i, m)
                 m_ij_scaled = m_ij * sm_scale
 
-            self.async_wait(7)
+            self.async_wait(6)
             with warp_pipeline_stage("memory2"):
                 v1 = self.shared_load_v(sub_idx=1, buf=a)  # .................. iter i
                 self.issue_global_load_k(i + 3, sub_idx=0, buf=b, pred=pred)  # iter i+3
@@ -2268,7 +2268,7 @@ class BlockScaledAttentionProgram:
                 qk1_shifted = qk1 * sm_scale - expand_dims(m_ij_scaled, -1)
                 p0 = ttgl.exp2(qk0_shifted)
 
-            self.async_wait(7)
+            self.async_wait(6)
             with warp_pipeline_stage("memory3"):
                 k0 = self.shared_load_k(sub_idx=0, buf=a)  # .................. iter i+2
                 k0_scale = self.shared_load_k_scale(buf=a, slice=0)  # ........ iter i+2
