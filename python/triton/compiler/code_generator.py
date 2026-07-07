@@ -265,12 +265,14 @@ class ASTFunction:
 
         def build_value(path, ty):
             nonlocal cursor, handles
-            # > set attributes
-            attr_specs = self.attrs.get(path, [])
-            for attr_name, attr_val in attr_specs:
-                fn.set_arg_attr(cursor, attr_name, attr_val)
+            arg_idx = cursor
             # > build frontend value
             val, cursor = ty._unflatten_ir(handles, cursor)
+            # > set attributes only when cursor is advanced
+            if cursor > arg_idx:
+                attr_specs = self.attrs.get(path, [])
+                for attr_name, attr_val in attr_specs:
+                    fn.set_arg_attr(arg_idx, attr_name, attr_val)
             set_iterable_path(vals, path, val)
 
         apply_with_path(self.arg_types, build_value)
