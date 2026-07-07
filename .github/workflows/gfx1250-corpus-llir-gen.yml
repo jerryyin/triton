@@ -44,6 +44,8 @@ jobs:
           echo "DIRNAME=${DIRNAME}" >> $GITHUB_ENV
 
       - name: Generating LLIR
+        env:
+          TRITON_MI450_LLVM_DOWNLOAD_GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -xeo pipefail
           RENDER_GID=$(getent group render | cut -d: -f3)
@@ -56,7 +58,7 @@ jobs:
             --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
             --shm-size=16G --ulimit memlock=-1 --ulimit stack=67108864 \
             -v "${{ github.workspace }}:/code" \
-            -v /data/ci/llvm/mi450-62b7cf96-release:/llvm \
+            -e TRITON_MI450_LLVM_DOWNLOAD_GITHUB_TOKEN \
             -v /data/ci/ffm/rocdtif-7.13-am+ffmlite-mi400-r6.06:/ffm-base \
             -v /data/ci/ffm/rocdtif-7.13-am+ffmlite-mi400-r6.06:/ffm-update \
             -v /data/ci/triton-cache/json:/root/.triton/json \

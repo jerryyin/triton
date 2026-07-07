@@ -28,7 +28,7 @@ export TRITON_BUILD_WITH_CLANG_LLD="TRUE"
 export TRITON_BUILD_WITH_CCACHE="TRUE"
 export CCACHE_COMPRESS="true"
 
-LLVM_LIBRARY_DIR=/llvm LLVM_SYSPATH=/llvm pip3 install --no-build-isolation .
+pip3 install --no-build-isolation .
 
 echo "=== Setup Environment ==="
 

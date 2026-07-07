@@ -25,7 +25,7 @@ export TRITON_BUILD_WITH_CLANG_LLD="TRUE"
 export TRITON_BUILD_WITH_CCACHE="TRUE"
 export CCACHE_COMPRESS="true"
 
-LLVM_LIBRARY_DIR=/llvm LLVM_SYSPATH=/llvm pip3 install --no-build-isolation .
+pip3 install --no-build-isolation .
 
 echo "=== Install triton_kernels ==="
 
@@ -99,30 +99,30 @@ echo "=== Gathering Corpus Kernels ==="
 # ============================================================================
 # MHA prefill (mxfp_fa_gfx1250.py)
 # ============================================================================
-run_and_collect "MHA_prefill" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 1 --seqlen_q 8192 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 64 --block_m 256 --block_n 128 --pipelined --num_warps 4 --scale_type block --disable_p_scaling"
-run_and_collect "MHA_prefill" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 1 --seqlen_q 8192 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 64 --block_m 256 --block_n 128 --pipelined --num_warps 4 --scale_type block --disable_p_scaling"
-run_and_collect "MHA_prefill" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 1 --seqlen_q 8192 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 128 --block_m 256 --block_n 128 --pipelined --num_warps 4 --scale_type block --disable_p_scaling"
-run_and_collect "MHA_prefill" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 1 --seqlen_q 8192 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 128 --block_m 256 --block_n 128 --pipelined --num_warps 4 --scale_type block --disable_p_scaling"
+run_and_collect "MHA_prefill" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 1 --seqlen_q 8192 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 64 --pipelined --scale_type block --disable_p_scaling"
+run_and_collect "MHA_prefill" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 1 --seqlen_q 8192 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 64 --pipelined --scale_type block --disable_p_scaling"
+run_and_collect "MHA_prefill" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 1 --seqlen_q 8192 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 128 --pipelined --scale_type block --disable_p_scaling"
+run_and_collect "MHA_prefill" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 1 --seqlen_q 8192 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 128 --pipelined --scale_type block --disable_p_scaling"
 
 # ============================================================================
 # MHA decode (mxfp_fa_gfx1250.py)
 # ============================================================================
-run_and_collect "MHA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 64 --block_m 16 --block_n 128 --pipelined --num_warps 1 --scale_type block --disable_p_scaling"
-run_and_collect "MHA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 64 --block_m 16 --block_n 128 --pipelined --num_warps 1 --scale_type block --disable_p_scaling"
-run_and_collect "MHA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 128 --block_m 16 --block_n 128 --pipelined --num_warps 1 --scale_type block --disable_p_scaling"
-run_and_collect "MHA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 128 --block_m 16 --block_n 128 --pipelined --num_warps 1 --scale_type block --disable_p_scaling"
+run_and_collect "MHA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 64 --pipelined --scale_type block --disable_p_scaling"
+run_and_collect "MHA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 64 --pipelined --scale_type block --disable_p_scaling"
+run_and_collect "MHA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 128 --pipelined --scale_type block --disable_p_scaling"
+run_and_collect "MHA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 16 --num_k_heads 16 --head_sz 128 --pipelined --scale_type block --disable_p_scaling"
 
 # ============================================================================
 # MQA decode (mxfp_fa_gfx1250.py)
 # ============================================================================
-run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 2 --head_sz 64 --block_m 16 --block_n 128 --pipelined --num_warps 1 --scale_type block --disable_p_scaling"
-run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 2 --head_sz 64 --block_m 16 --block_n 128 --pipelined --num_warps 1 --scale_type block --disable_p_scaling"
-run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 2 --head_sz 128 --block_m 16 --block_n 128 --pipelined --num_warps 1 --scale_type block --disable_p_scaling"
-run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 2 --head_sz 128 --block_m 16 --block_n 128 --pipelined --num_warps 1 --scale_type block --disable_p_scaling"
-run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 1 --head_sz 64 --block_m 16 --block_n 128 --pipelined --num_warps 1 --scale_type block --disable_p_scaling"
-run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 1 --head_sz 64 --block_m 16 --block_n 128 --pipelined --num_warps 1 --scale_type block --disable_p_scaling"
-run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 1 --head_sz 128 --block_m 16 --block_n 128 --pipelined --num_warps 1 --scale_type block --disable_p_scaling"
-run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 1 --head_sz 128 --block_m 16 --block_n 128 --pipelined --num_warps 1 --scale_type block --disable_p_scaling"
+run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 2 --head_sz 64 --pipelined --scale_type block --disable_p_scaling"
+run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 2 --head_sz 64 --pipelined --scale_type block --disable_p_scaling"
+run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 2 --head_sz 128 --pipelined --scale_type block --disable_p_scaling"
+run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 2 --head_sz 128 --pipelined --scale_type block --disable_p_scaling"
+run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 1 --head_sz 64 --pipelined --scale_type block --disable_p_scaling"
+run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 1 --head_sz 64 --pipelined --scale_type block --disable_p_scaling"
+run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 1 --head_sz 128 --pipelined --scale_type block --disable_p_scaling"
+run_and_collect "MQA_decode" "python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e2m1 --batch 64 --seqlen_q 1 --seqlen_k 8192 --num_q_heads 64 --num_k_heads 1 --head_sz 128 --pipelined --scale_type block --disable_p_scaling"
 
 # ============================================================================
 # mxfp_gemm_gfx1250 (MXFP GEMM kernels)

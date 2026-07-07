@@ -24,7 +24,7 @@ export TRITON_BUILD_WITH_CLANG_LLD="TRUE"
 export TRITON_BUILD_WITH_CCACHE="TRUE"
 export CCACHE_COMPRESS="true"
 
-LLVM_LIBRARY_DIR=/llvm LLVM_SYSPATH=/llvm pip3 install --no-build-isolation .
+pip3 install --no-build-isolation .
 
 echo "=== Install triton_kernels ==="
 
@@ -65,7 +65,7 @@ echo "=== Gathering CORE MXFP Gluon GEMM/Attention Kernels ==="
 unset HSA_MODEL_ARGS
 # TODO: uncomment. Temp disabled for experimenting
 HSA_MODEL_NUM_THREADS=4 python3 third_party/amd/python/examples/gluon/mxfp_gemm_gfx1250.py -M 8192 -N 8192 -K 8192 -BM 256 -BN 256 -BK 256 --num_warps 4 --num_buffers 2 --dtype_a float8_e4m3 --dtype_b float8_e4m3 --scale_preshuffled --with_a_scale --schedule 'sliceK'
-HSA_MODEL_NUM_THREADS=4 python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 1 --seqlen_q 8192 --seqlen_k 8192 --num_q_heads 1 --num_k_heads 1 --head_sz 128 --block_m 256 --block_n 128 --scale_type global --pipelined --num_warps 4
+HSA_MODEL_NUM_THREADS=4 python3 third_party/amd/python/examples/gluon/mxfp_fa_gfx1250.py --q_type e4m3 --kv_type e4m3 --batch 1 --seqlen_q 8192 --seqlen_k 8192 --num_q_heads 1 --num_k_heads 1 --head_sz 128 --scale_type global --pipelined
 
 export HSA_ENABLE_SDMA=0
 # Disabled in https://github.com/AMD-Triton/triton-mi450/pull/63 due to segfault
