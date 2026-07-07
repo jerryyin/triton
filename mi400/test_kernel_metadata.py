@@ -156,8 +156,7 @@ def test_f16_attention_kernel_metadata(config):
 
 
 def generate_mxfp_attention_configs():
-    base_configs = [
-        # Pipelined kernel
+    return [
         pytest.param({
             "q_type": "e4m3",
             "kv_type": "e4m3",
@@ -167,92 +166,16 @@ def generate_mxfp_attention_configs():
             "num_q_heads": 1,
             "num_k_heads": 1,
             "head_sz": 128,
-            "block_m": 128,
-            "block_n": 128,
-            "scale_type": "block",
-            "num_warps": 4,
-        }),
-        pytest.param({
-            "q_type": "e4m3",
-            "kv_type": "e4m3",
-            "batch": 1,
-            "seqlen_q": 1024,
-            "seqlen_k": 1024,
-            "num_q_heads": 1,
-            "num_k_heads": 1,
-            "head_sz": 128,
-            "block_m": 128,
-            "block_n": 128,
-            "scale_type": "global",
-            "num_warps": 4,
-        }),
-        # 4-warp pipelined kernel with block size 256x128
-        pytest.param({
-            "q_type": "e4m3",
-            "kv_type": "e4m3",
-            "batch": 1,
-            "seqlen_q": 1024,
-            "seqlen_k": 1024,
-            "num_q_heads": 1,
-            "num_k_heads": 1,
-            "head_sz": 128,
-            "block_m": 256,
-            "block_n": 128,
-            "scale_type": "block",
-            "num_warps": 4,
-        }),
-        pytest.param({
-            "q_type": "e4m3",
-            "kv_type": "e4m3",
-            "batch": 1,
-            "seqlen_q": 1024,
-            "seqlen_k": 1024,
-            "num_q_heads": 1,
-            "num_k_heads": 1,
-            "head_sz": 128,
-            "block_m": 256,
-            "block_n": 128,
-            "scale_type": "global",
-            "num_warps": 4,
-        }),
-        # 8-warp pipelined kernel with block size 128x128
-        pytest.param({
-            "q_type": "e4m3",
-            "kv_type": "e4m3",
-            "batch": 1,
-            "seqlen_q": 1024,
-            "seqlen_k": 1024,
-            "num_q_heads": 1,
-            "num_k_heads": 1,
-            "head_sz": 128,
-            "block_m": 128,
-            "block_n": 128,
-            "scale_type": "block",
-            "num_warps": 8,
-        }),
-        pytest.param({
-            "q_type": "e4m3",
-            "kv_type": "e4m3",
-            "batch": 1,
-            "seqlen_q": 1024,
-            "seqlen_k": 1024,
-            "num_q_heads": 1,
-            "num_k_heads": 1,
-            "head_sz": 128,
-            "block_m": 128,
-            "block_n": 128,
-            "scale_type": "global",
-            "num_warps": 8,
-        }),
+            "scale_type": scale_type,
+            "disable_p_scaling": True,
+            "pipelined": True,
+            "pingpong": pingpong,
+        }) for scale_type in ["block", "global"] for pingpong in [False, True]
     ]
-    return base_configs
 
 
 @pytest.mark.parametrize("config", generate_mxfp_attention_configs())
 def test_mxfp_attention_kernel_metadata(config):
-    config["pipelined"] = True
-    config["disable_p_scaling"] = True
-    config["split_k"] = 1
     attn_kernel = run_mxfp_attention(**config)
 
     config_name = "mxfp_attn_fwd_"
@@ -263,9 +186,8 @@ def test_mxfp_attention_kernel_metadata(config):
     config_name += f"SEQLENK{config['seqlen_k']}_"
     config_name += f"QHEADS{config['num_q_heads']}_"
     config_name += f"KVHEADS{config['num_k_heads']}_"
-    config_name += f"HEADSZ{config['head_sz']}_"
-    config_name += f"BM{config['block_m']}_"
-    config_name += f"BN{config['block_n']}_"
-    config_name += f"WARPS{config['num_warps']}"
+    config_name += f"HEADSZ{config['head_sz']}"
+    if config["pingpong"]:
+        config_name += "_pingpong"
 
     static_metadata_check(attn_kernel, config_name)

@@ -1,23 +1,5 @@
 {
-  "mxfp_attn_fwd_block_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128_BM128_BN128_WARPS4": {
-    "sgpr_count": 94,
-    "sgpr_spill_count": 0,
-    "vgpr_count": 762,
-    "vgpr_spill_count": 0,
-    "scratch_size": 0,
-    "code_len_in_byte": 18420,
-    "occupancy": 1
-  },
-  "mxfp_attn_fwd_global_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128_BM128_BN128_WARPS4": {
-    "sgpr_count": 58,
-    "sgpr_spill_count": 0,
-    "vgpr_count": 752,
-    "vgpr_spill_count": 0,
-    "scratch_size": 0,
-    "code_len_in_byte": 17812,
-    "occupancy": 1
-  },
-  "mxfp_attn_fwd_block_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128_BM256_BN128_WARPS4": {
+  "mxfp_attn_fwd_block_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128": {
     "sgpr_count": 98,
     "sgpr_spill_count": 0,
     "vgpr_count": 912,
@@ -26,7 +8,7 @@
     "code_len_in_byte": 33824,
     "occupancy": 1
   },
-  "mxfp_attn_fwd_global_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128_BM256_BN128_WARPS4": {
+  "mxfp_attn_fwd_global_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128": {
     "sgpr_count": 74,
     "sgpr_spill_count": 0,
     "vgpr_count": 956,
@@ -35,22 +17,22 @@
     "code_len_in_byte": 33160,
     "occupancy": 1
   },
-  "mxfp_attn_fwd_block_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128_BM128_BN128_WARPS8": {
-    "sgpr_count": 98,
-    "sgpr_spill_count": 0,
-    "vgpr_count": 370,
-    "vgpr_spill_count": 0,
-    "scratch_size": 0,
-    "code_len_in_byte": 11244,
+  "mxfp_attn_fwd_block_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128_pingpong": {
+    "sgpr_count": 107,
+    "sgpr_spill_count": 28,
+    "vgpr_count": 512,
+    "vgpr_spill_count": 16,
+    "scratch_size": 68,
+    "code_len_in_byte": 19948,
     "occupancy": 2
   },
-  "mxfp_attn_fwd_global_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128_BM128_BN128_WARPS8": {
-    "sgpr_count": 58,
+  "mxfp_attn_fwd_global_e4m3xe4m3_BATCH1_SEQLENQ1024_SEQLENK1024_QHEADS1_KVHEADS1_HEADSZ128_pingpong": {
+    "sgpr_count": 74,
     "sgpr_spill_count": 0,
-    "vgpr_count": 354,
-    "vgpr_spill_count": 0,
-    "scratch_size": 0,
-    "code_len_in_byte": 10712,
+    "vgpr_count": 512,
+    "vgpr_spill_count": 8,
+    "scratch_size": 36,
+    "code_len_in_byte": 18504,
     "occupancy": 2
   },
   "BATCH8_SEQLENQ512_SEQLENK512_QHEADS8_KVHEADS8_HEADSZ128_BM128_BN64_f16_attn_fwd_pipelined_kernel": {
