@@ -606,6 +606,68 @@ static Value readFirstLaneUniform(ConversionPatternRewriter &rewriter,
   return v;
 }
 
+// readfirstlane a (wave-uniform) pointer into an SGPR pointer.
+static Value readFirstLanePtr(ConversionPatternRewriter &rewriter, Location loc,
+                              Value ptr) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  Value asI = b.ptrtoint(rewriter.getI64Type(), ptr);
+  Value uni = readFirstLaneUniform(rewriter, loc, asI);
+  return b.inttoptr(ptr.getType(), uni);
+}
+
+static bool uniformSBufferEnabled() {
+  return ::triton::tools::getBoolEnv("TRITON_AMD_UNIFORM_SBUFFER");
+}
+
+// SPIKE (issue #1885) -- KNOWN INCORRECT ON gfx1250, kept only for comparison.
+// Builds a raw <4 x i32> buffer resource descriptor (V#) from a (uniform) base
+// pointer and emits @llvm.amdgcn.s.buffer.load for a run of `numElems`
+// elements. It selects and coalesces well (2x s_buffer_load_b256 on a8w4) but
+// reads WRONG data: gfx1250 uses a v2i64 descriptor format (57-bit base), not
+// this classic <4xi32> layout, and there is no ptr-based scalar-buffer-load
+// intrinsic to pair with the correct MakeBufferRsrcOp V#. Use the s_load path
+// instead. See §8.1a.
+static SmallVector<Value>
+emitSBufferLoadRun(ConversionPatternRewriter &rewriter, Location loc,
+                   Value baseSgprPtr, Type elemTy, unsigned numElems) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  Type i32 = rewriter.getI32Type();
+  Value basei = b.ptrtoint(rewriter.getI64Type(), baseSgprPtr);
+  Value w0 = b.trunc(i32, basei);
+  Value w1 = b.trunc(i32, b.lshr(basei, b.i64_val(32)));
+  Value w2 = b.i32_val(std::numeric_limits<int>::max()); // num_records
+  uint32_t flags = (7u << 12) | (4u << 15) | (1u << 24) | (3u << 28);
+  Value w3 = b.i32_val(static_cast<int>(flags));
+  Type v4i32 = LLVM::getVectorType(i32, 4);
+  Value rsrc = b.undef(v4i32);
+  rsrc = b.insert_element(v4i32, rsrc, w0, b.i32_val(0));
+  rsrc = b.insert_element(v4i32, rsrc, w1, b.i32_val(1));
+  rsrc = b.insert_element(v4i32, rsrc, w2, b.i32_val(2));
+  rsrc = b.insert_element(v4i32, rsrc, w3, b.i32_val(3));
+
+  // s_buffer_load requires DWORD-aligned byte offsets. Load i32 dwords at
+  // offsets 0,4,8,... and unpack `elemTy` sub-elements from each dword.
+  unsigned elemBits = elemTy.getIntOrFloatBitWidth();
+  unsigned perDword = std::max(1u, 32u / elemBits);
+  unsigned numDwords = (numElems + perDword - 1) / perDword;
+  Type intElemTy = rewriter.getIntegerType(elemBits);
+  SmallVector<Value> out;
+  for (unsigned d = 0; d < numDwords; ++d) {
+    Value off = b.i32_val(static_cast<int>(d * 4));
+    Operation *call = LLVM::createLLVMIntrinsicCallOp(
+        rewriter, loc, "llvm.amdgcn.s.buffer.load.i32", TypeRange{i32},
+        ValueRange{rsrc, off, b.i32_val(0)});
+    Value dword = call->getResult(0);
+    for (unsigned k = 0; k < perDword && out.size() < numElems; ++k) {
+      Value shifted =
+          k ? b.lshr(dword, b.i32_val(static_cast<int>(k * elemBits))) : dword;
+      Value sub = b.trunc(intElemTy, shifted);
+      out.push_back(intElemTy == elemTy ? sub : b.bitcast(sub, elemTy));
+    }
+  }
+  return out;
+}
+
 struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
                           public LoadStoreConversionBase {
   LoadOpConversion(LLVMTypeConverter &converter,
@@ -642,6 +704,41 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     // Get the LLVM values for pointers
     auto ptrElems = unpackLLElements(loc, llPtr, rewriter);
     assert(ptrElems.size() == numElems);
+
+    // Wave-uniform gather-index scalarization (issue #1885). A wave-uniform,
+    // read-only load feeding the TDM gather descriptor is loaded straight into
+    // SGPRs: readfirstlane each (uniform) address into an SGPR pointer and emit
+    // an `invariant` scalar load. ISel selects s_load and coalesces the
+    // contiguous run into wide scalar loads — no per-lane vector load, and the
+    // values enter the K-loop already scalar (no in-loop v_readfirstlane).
+    // Emitted at the load site, which sits outside the loop.
+    // TODO(#1885): consumer-scope (only gather-index loads) + compiler
+    // read-only proof; currently gated by TRITON_AMD_UNIFORM_SLOAD +
+    // uniformity.
+    if ((uniformIndexScalarizeEnabled() || uniformSBufferEnabled()) &&
+        isWaveUniformTensorLoad(op) && !mask && !other) {
+      SmallVector<Value> loadedVals;
+      if (uniformSBufferEnabled()) {
+        // s_buffer_load spike: one V# from the (uniform) base, uniform offsets.
+        Value base = readFirstLanePtr(rewriter, loc, ptrElems[0]);
+        loadedVals =
+            emitSBufferLoadRun(rewriter, loc, base, valueElemTy, numElems);
+      } else {
+        // s_load path: per-element uniform address + invariant scalar load.
+        for (size_t i = 0; i < numElems; ++i) {
+          Value sPtr = readFirstLanePtr(rewriter, loc, ptrElems[i]);
+          auto ld = LLVM::LoadOp::create(rewriter, loc, valueElemTy, sPtr,
+                                         /*alignment=*/0);
+          ld.setInvariant(true);
+          loadedVals.push_back(ld);
+        }
+      }
+      Type llvmResultStructTy = getTypeConverter()->convertType(valueTy);
+      Value resultStruct = packLLElements(loc, getTypeConverter(), loadedVals,
+                                          rewriter, llvmResultStructTy);
+      rewriter.replaceOp(op, {resultStruct});
+      return success();
+    }
 
     // Get the LLVM values for mask
     SmallVector<Value> maskElems =
@@ -696,17 +793,6 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         loadedVals.push_back(loaded);
       }
     } // end vec
-
-    // Wave-uniform load scalarization (issue #1885). When the loaded tensor is
-    // uniform across lanes, lift each element into an SGPR here (outside any
-    // enclosing loop). Consumers that require scalar operands -- notably the
-    // TDM gather/scatter descriptor -- then read the values straight from
-    // SGPRs, eliminating the per-iteration v_readfirstlane the backend would
-    // otherwise insert inside the K-loop.
-    if (uniformIndexScalarizeEnabled() && isWaveUniformTensorLoad(op)) {
-      for (Value &lv : loadedVals)
-        lv = readFirstLaneUniform(rewriter, loc, lv);
-    }
 
     Type llvmResultStructTy = getTypeConverter()->convertType(valueTy);
     Value resultStruct = packLLElements(loc, getTypeConverter(), loadedVals,
