@@ -712,10 +712,14 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     // contiguous run into wide scalar loads — no per-lane vector load, and the
     // values enter the K-loop already scalar (no in-loop v_readfirstlane).
     // Emitted at the load site, which sits outside the loop.
-    // TODO(#1885): consumer-scope (only gather-index loads) + compiler
-    // read-only proof; currently gated by TRITON_AMD_UNIFORM_SLOAD +
-    // uniformity.
-    if ((uniformIndexScalarizeEnabled() || uniformSBufferEnabled()) &&
+    //
+    // Production trigger: the `amdgpu.uniform_scalar_index` attribute set by
+    // TritonAMDGPUConvertToTensorOps (consumer-scoped to gather/scatter index
+    // loads + read-only-proven). The env vars are manual overrides; the
+    // s_buffer path is a known-incorrect spike (§8.1a).
+    bool doScalarLoad = op->hasAttr("amdgpu.uniform_scalar_index") ||
+                        uniformIndexScalarizeEnabled();
+    if ((doScalarLoad || uniformSBufferEnabled()) &&
         isWaveUniformTensorLoad(op) && !mask && !other) {
       SmallVector<Value> loadedVals;
       if (uniformSBufferEnabled()) {
@@ -724,7 +728,13 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         loadedVals =
             emitSBufferLoadRun(rewriter, loc, base, valueElemTy, numElems);
       } else {
-        // s_load path: per-element uniform address + invariant scalar load.
+        // s_load path: readfirstlane each (uniform) per-element address into an
+        // SGPR pointer + invariant scalar load. Per-element (not a single
+        // cached base + constant GEP) because the layout's register->memory
+        // order is not a simple +i, so cached-base indexing reads wrong
+        // addresses.
+        // TODO(#1885): layout-aware base+offset split to coalesce into wide
+        // s_load and cut the prologue address-lift readfirstlanes.
         for (size_t i = 0; i < numElems; ++i) {
           Value sPtr = readFirstLanePtr(rewriter, loc, ptrElems[i]);
           auto ld = LLVM::LoadOp::create(rewriter, loc, valueElemTy, sPtr,

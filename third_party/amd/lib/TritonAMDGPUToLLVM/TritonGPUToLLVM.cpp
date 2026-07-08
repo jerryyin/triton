@@ -17,6 +17,7 @@
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 #include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
@@ -31,6 +32,7 @@
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonInstrument/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
@@ -42,6 +44,116 @@ namespace mlir::triton {
 using namespace mlir;
 
 namespace {
+
+// --- Wave-uniform gather/scatter index scalarization marking (issue #1885) ---
+// Tag a wave-uniform, read-only tt.load that feeds a TDM gather/scatter
+// row-index operand with `amdgpu.uniform_scalar_index`, so LoadOpConversion
+// loads it straight into SGPRs (s_load) instead of a per-lane vector load +
+// in-loop v_readfirstlane. Done here (start of ConvertToLLVM) rather than
+// earlier so the tag is set on the final IR and consumed in the same pass
+// (earlier make_ttgir passes that move prologue loads would drop a discardable
+// attr).
+
+// Trace back to the producing tt.LoadOp through layout / integer-elementwise
+// ops.
+static triton::LoadOp traceToProducingLoad(Value v, int depth = 8) {
+  if (depth < 0 || !v)
+    return nullptr;
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return nullptr;
+  if (auto ld = dyn_cast<triton::LoadOp>(def))
+    return ld;
+  if (isa<triton::gpu::ConvertLayoutOp, triton::BitcastOp, arith::DivSIOp,
+          arith::DivUIOp, arith::RemSIOp, arith::RemUIOp, arith::AddIOp,
+          arith::SubIOp, arith::MulIOp, arith::TruncIOp, arith::ExtSIOp,
+          arith::ExtUIOp, arith::AndIOp, arith::OrIOp>(def)) {
+    for (Value operand : def->getOperands()) {
+      if (!isa<RankedTensorType>(operand.getType()))
+        continue;
+      if (auto ld = traceToProducingLoad(operand, depth - 1))
+        return ld;
+    }
+  }
+  return nullptr;
+}
+
+// Trace a pointer to its base value (ideally a kernel-arg BlockArgument).
+static Value traceToBasePtr(Value ptr) {
+  while (ptr) {
+    Operation *def = ptr.getDefiningOp();
+    if (!def)
+      break;
+    if (auto ap = dyn_cast<triton::AddPtrOp>(def)) {
+      ptr = ap.getPtr();
+      continue;
+    }
+    if (auto sp = dyn_cast<triton::SplatOp>(def)) {
+      ptr = sp.getSrc();
+      continue;
+    }
+    if (auto bc = dyn_cast<triton::BitcastOp>(def)) {
+      ptr = bc.getSrc();
+      continue;
+    }
+    break;
+  }
+  return ptr;
+}
+
+// Read-only iff base is a kernel-arg BlockArgument and no store/atomic in the
+// function may-alias it (conservative: alias == same traced base).
+static bool baseIsReadOnly(Value base, Operation *funcScope) {
+  if (!isa<BlockArgument>(base))
+    return false;
+  bool written = false;
+  funcScope->walk([&](Operation *op) {
+    Value sptr;
+    if (auto st = dyn_cast<triton::StoreOp>(op))
+      sptr = st.getPtr();
+    else if (auto at = dyn_cast<triton::AtomicRMWOp>(op))
+      sptr = at.getPtr();
+    else if (auto at = dyn_cast<triton::AtomicCASOp>(op))
+      sptr = at.getPtr();
+    else
+      return;
+    if (traceToBasePtr(sptr) == base)
+      written = true;
+  });
+  return !written;
+}
+
+static bool loadIsWaveUniform(triton::LoadOp ld) {
+  auto ty = dyn_cast<RankedTensorType>(ld.getType());
+  if (!ty)
+    return false;
+  auto ll = triton::gpu::toLinearLayout(ty);
+  auto kLane = StringAttr::get(ld.getContext(), "lane");
+  int64_t laneSize = ll.getInDimSize(kLane);
+  return laneSize > 1 && ll.getFreeVariableMasks().lookup(kLane) ==
+                             static_cast<int32_t>(laneSize - 1);
+}
+
+static void markUniformGatherIndexLoads(ModuleOp mod, MLIRContext *context) {
+  mod.walk([&](Operation *op) {
+    Value idx;
+    if (auto g = dyn_cast<triton::amdgpu::AsyncTDMGatherOp>(op))
+      idx = g.getSrcRowIndices();
+    else if (auto s = dyn_cast<triton::amdgpu::AsyncTDMScatterOp>(op))
+      idx = s.getDstRowIndices();
+    else
+      return;
+    triton::LoadOp ld = traceToProducingLoad(idx);
+    if (!ld || !loadIsWaveUniform(ld))
+      return;
+    Operation *func = ld->getParentOfType<FunctionOpInterface>();
+    if (!func)
+      func = mod;
+    if (!baseIsReadOnly(traceToBasePtr(ld.getPtr()), func))
+      return;
+    ld->setAttr("amdgpu.uniform_scalar_index", UnitAttr::get(context));
+  });
+}
 
 class TritonLLVMFunctionConversionTarget : public ConversionTarget {
 public:
@@ -93,6 +205,9 @@ struct ConvertTritonAMDGPUToLLVM
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
+
+    // Tag wave-uniform, read-only gather/scatter index loads (issue #1885).
+    markUniformGatherIndexLoads(mod, context);
 
     AMD::TargetInfo targetInfo(this->gfxArch.getValue());
     if (targetInfo.getISAFamily() == triton::amdgpu::ISAFamily::Unknown) {
