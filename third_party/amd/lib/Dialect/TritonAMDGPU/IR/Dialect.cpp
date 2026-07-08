@@ -637,6 +637,24 @@ LogicalResult validateWarpUsedHint(AsyncTDMCopyGlobalToLocalOp op,
 
   return success();
 }
+// A TDM op uses a single shared layout for its descriptor and its shmem
+// allocation, so they must match. But padded shared layouts bake the tile
+// shape/order into the attribute, which legitimately differs between the
+// descriptor and the allocation under rank-reducing loads (e.g. a [1, N]
+// descriptor block loaded into an [N] tile). For padded layouts, compare only
+// the physical padding (intervals + paddings). See issue #1885.
+static bool tdmSharedLayoutsCompatible(Attribute descLayout,
+                                       Attribute allocLayout) {
+  if (descLayout == allocLayout)
+    return true;
+  auto descPad = llvm::dyn_cast<gpu::PaddedSharedEncodingAttr>(descLayout);
+  auto allocPad = llvm::dyn_cast<gpu::PaddedSharedEncodingAttr>(allocLayout);
+  if (descPad && allocPad)
+    return descPad.getIntervals() == allocPad.getIntervals() &&
+           descPad.getPaddings() == allocPad.getPaddings();
+  return false;
+}
+
 } // namespace
 
 LogicalResult AsyncTDMCopyGlobalToLocalOp::verify() {
@@ -649,7 +667,8 @@ LogicalResult AsyncTDMCopyGlobalToLocalOp::verify() {
   if (failed(verifyResult))
     return verifyResult;
 
-  if (tensorDescTy.getSharedLayout() != smemTy.getEncoding())
+  if (!tdmSharedLayoutsCompatible(tensorDescTy.getSharedLayout(),
+                                  smemTy.getEncoding()))
     return emitOpError(
         "Mismatch between TDM descriptor and destination smem encodings");
 
@@ -754,7 +773,8 @@ LogicalResult AsyncTDMCopyLocalToGlobalOp::verify() {
   if (failed(verifyResult))
     return verifyResult;
 
-  if (tensorDescTy.getSharedLayout() != smemTy.getEncoding())
+  if (!tdmSharedLayoutsCompatible(tensorDescTy.getSharedLayout(),
+                                  smemTy.getEncoding()))
     return emitOpError(
         "Mismatch between TDM descriptor and source smem encodings");
 

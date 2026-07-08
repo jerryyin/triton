@@ -19,6 +19,7 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/Sys/GetEnv.h"
 
 #include <cassert>
 
@@ -534,6 +535,77 @@ struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
   }
 };
 
+// Env flag gating the wave-uniform gather-index scalarization (issue #1885).
+// Default off: with the flag unset, load lowering is byte-for-byte unchanged.
+static bool uniformIndexScalarizeEnabled() {
+  return ::triton::tools::getBoolEnv("TRITON_AMD_UNIFORM_SLOAD");
+}
+
+// A tensor load is "wave-uniform" when every lane of the warp holds the same
+// value, i.e. the `lane` dimension is entirely free in the result layout's
+// LinearLayout. This is exactly the property the TDM gather index tensor has
+// (its blocked encoding slices the lane dim out), and it is a fact of the
+// Triton tensor layout that LLVM's own UniformityAnalysis cannot recover once
+// the address is materialized as a per-lane VGPR GEP chain. See issue #1885.
+static bool isWaveUniformTensorLoad(triton::LoadOp op) {
+  auto tensorTy = dyn_cast<RankedTensorType>(op.getType());
+  if (!tensorTy)
+    return false;
+  auto ll = triton::gpu::toLinearLayout(tensorTy);
+  StringAttr kLane = StringAttr::get(op.getContext(), "lane");
+  int32_t laneMask = ll.getFreeVariableMasks().lookup(kLane);
+  // The `lane` in-dimension of the LinearLayout has size == warpSize. Every
+  // lane basis is free (value identical across all lanes) iff laneMask ==
+  // size-1. Derive the size from the layout itself so slice/broadcast encodings
+  // (whose per-dim threadsPerWarp collapses to 1) are still handled correctly.
+  int64_t laneSize = ll.getInDimSize(kLane);
+  return laneSize > 1 && laneMask == static_cast<int32_t>(laneSize - 1);
+}
+
+// Force `v` (which is wave-uniform) into an SGPR via v_readfirstlane. Emitted
+// at the load site, which for the gather-index load sits OUTSIDE the K-loop, so
+// the value enters the loop already scalar and the backend inserts no
+// per-iteration readfirstlane. readfirstlane of a value equal across lanes
+// returns that same value, so this is unconditionally sound (no
+// read-only/invariant assumption). Widths other than 8/16/32/64 are left
+// untouched (safe no-op).
+static Value readFirstLaneUniform(ConversionPatternRewriter &rewriter,
+                                  Location loc, Value v) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  Type ty = v.getType();
+  if (!ty.isIntOrFloat())
+    return v;
+  unsigned bits = ty.getIntOrFloatBitWidth();
+  Type i32 = rewriter.getI32Type();
+  auto rfl = [&](Value x) -> Value {
+    return ROCDL::ReadfirstlaneOp::create(rewriter, loc, x.getType(), x);
+  };
+  if (bits == 32) {
+    bool isInt = ty.isInteger(32);
+    Value asI = isInt ? v : b.bitcast(v, i32);
+    Value r = rfl(asI);
+    return isInt ? r : b.bitcast(r, ty);
+  }
+  if (bits < 32) {
+    Type intTy = rewriter.getIntegerType(bits);
+    Value asI = ty.isInteger(bits) ? v : b.bitcast(v, intTy);
+    Value ext = b.zext(i32, asI);
+    Value r = rfl(ext);
+    Value tr = b.trunc(intTy, r);
+    return ty.isInteger(bits) ? tr : b.bitcast(tr, ty);
+  }
+  if (bits == 64) {
+    Type i64 = rewriter.getI64Type();
+    Value asI = ty.isInteger(64) ? v : b.bitcast(v, i64);
+    Value lo = b.trunc(i32, asI);
+    Value hi = b.trunc(i32, b.lshr(asI, b.i64_val(32)));
+    Value comb =
+        b.or_(b.zext(i64, rfl(lo)), b.shl(b.zext(i64, rfl(hi)), b.i64_val(32)));
+    return ty.isInteger(64) ? comb : b.bitcast(comb, ty);
+  }
+  return v;
+}
+
 struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
                           public LoadStoreConversionBase {
   LoadOpConversion(LLVMTypeConverter &converter,
@@ -624,6 +696,17 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         loadedVals.push_back(loaded);
       }
     } // end vec
+
+    // Wave-uniform load scalarization (issue #1885). When the loaded tensor is
+    // uniform across lanes, lift each element into an SGPR here (outside any
+    // enclosing loop). Consumers that require scalar operands -- notably the
+    // TDM gather/scatter descriptor -- then read the values straight from
+    // SGPRs, eliminating the per-iteration v_readfirstlane the backend would
+    // otherwise insert inside the K-loop.
+    if (uniformIndexScalarizeEnabled() && isWaveUniformTensorLoad(op)) {
+      for (Value &lv : loadedVals)
+        lv = readFirstLaneUniform(rewriter, loc, lv);
+    }
 
     Type llvmResultStructTy = getTypeConverter()->convertType(valueTy);
     Value resultStruct = packLLElements(loc, getTypeConverter(), loadedVals,
