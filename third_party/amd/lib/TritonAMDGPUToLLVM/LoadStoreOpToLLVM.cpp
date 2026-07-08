@@ -728,19 +728,58 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         loadedVals =
             emitSBufferLoadRun(rewriter, loc, base, valueElemTy, numElems);
       } else {
-        // s_load path: readfirstlane each (uniform) per-element address into an
-        // SGPR pointer + invariant scalar load. Per-element (not a single
-        // cached base + constant GEP) because the layout's register->memory
-        // order is not a simple +i, so cached-base indexing reads wrong
-        // addresses.
-        // TODO(#1885): layout-aware base+offset split to coalesce into wide
-        // s_load and cut the prologue address-lift readfirstlanes.
-        for (size_t i = 0; i < numElems; ++i) {
-          Value sPtr = readFirstLanePtr(rewriter, loc, ptrElems[i]);
-          auto ld = LLVM::LoadOp::create(rewriter, loc, valueElemTy, sPtr,
-                                         /*alignment=*/0);
-          ld.setInvariant(true);
-          loadedVals.push_back(ld);
+        // s_load path. Layout-derived scalar addressing: readfirstlane the base
+        // (element 0) address ONCE, then GEP each element by its TRUE offset
+        // delta from the LinearLayout (register i holds tensor index t_i;
+        // delta = t_i - t_0). The register->memory order is a permutation (a
+        // naive +i is wrong), but the layout gives the exact per-register
+        // index; the warp/CTA contribution cancels in the delta. Constant
+        // deltas from one scalar base let ISel coalesce into wide s_load and
+        // cost a single address readfirstlane. Falls back to a per-element lift
+        // for non-1D.
+        //
+        // SIDE EFFECT (issue #1885, doc §8.1b): the coalesced wide contiguous
+        // SGPR block raises SGPR pressure, and the backend then re-materializes
+        // (re-readfirstlane) the gather INDEX descriptor group *inside* the
+        // K-loop instead of hoisting it (in-loop readfirstlane 16 -> 32 on
+        // a8w4). The per-element form (individual SGPRs) avoids this. Kept
+        // as-is while the pressure/rematerialization is investigated.
+        auto tensorTy = dyn_cast<RankedTensorType>(valueTy);
+        if (tensorTy && tensorTy.getRank() == 1) {
+          auto ll = triton::gpu::toLinearLayout(tensorTy);
+          StringAttr kReg = rewriter.getStringAttr("register");
+          StringAttr kLane = rewriter.getStringAttr("lane");
+          StringAttr kWarp = rewriter.getStringAttr("warp");
+          StringAttr kBlock = rewriter.getStringAttr("block");
+          StringAttr outName = *ll.getOutDimNames().begin();
+          auto tIndex = [&](int i) -> int {
+            auto r = ll.apply({{kReg, i}, {kLane, 0}, {kWarp, 0}, {kBlock, 0}});
+            for (auto &kv : r)
+              if (kv.first == outName)
+                return kv.second;
+            return 0;
+          };
+          int t0 = tIndex(0);
+          Value sBase = readFirstLanePtr(rewriter, loc, ptrElems[0]);
+          for (size_t i = 0; i < numElems; ++i) {
+            int delta = tIndex(i) - t0;
+            Value sPtr = sBase;
+            if (delta)
+              sPtr =
+                  b.gep(sBase.getType(), valueElemTy, sBase, b.i32_val(delta));
+            auto ld = LLVM::LoadOp::create(rewriter, loc, valueElemTy, sPtr,
+                                           /*alignment=*/0);
+            ld.setInvariant(true);
+            loadedVals.push_back(ld);
+          }
+        } else {
+          for (size_t i = 0; i < numElems; ++i) {
+            Value sPtr = readFirstLanePtr(rewriter, loc, ptrElems[i]);
+            auto ld = LLVM::LoadOp::create(rewriter, loc, valueElemTy, sPtr,
+                                           /*alignment=*/0);
+            ld.setInvariant(true);
+            loadedVals.push_back(ld);
+          }
         }
       }
       Type llvmResultStructTy = getTypeConverter()->convertType(valueTy);
