@@ -11,6 +11,7 @@ import pytest
 import torch
 import math
 
+import triton
 from triton import cdiv
 from triton.language.core import PropagateNan
 from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
@@ -2808,7 +2809,8 @@ def attn_fwd(  #
         q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,  #
         q_scale: torch.Tensor | int, k_scale: torch.Tensor | int, v_scale: torch.Tensor | int,  #
         q_type: str, kv_type: str, block_scaling: bool, p_scaling: bool,  #
-        pipelined: bool, pingpong: bool):
+        pipelined: bool, pingpong: bool,  #
+        profile: bool = False):
 
     batch, seqlen_q, num_q_heads, head_sz = q.shape
     _, seqlen_k, num_k_heads, _ = k.shape
@@ -2975,7 +2977,14 @@ def attn_fwd(  #
     sm_scale = head_sz**(-0.5) * 1.4426950408889634  # 1 / ln(2)
     args = [q, k, v, q_scale, k_scale, v_scale, o, l, m, sm_scale, cfg]
     kwargs = {"num_warps": num_warps, "num_ctas": num_ctas, "waves_per_eu": 1}
-    kernel = mxfp_attn_fwd_kernel[grid](*args, **kwargs)
+
+    def kernel_fn():
+        return mxfp_attn_fwd_kernel[grid](*args, **kwargs)
+
+    kernel = kernel_fn()
+    ms = None
+    if profile:
+        ms = triton.testing.do_bench(kernel_fn)
 
     out = o.cpu()
     if split_k > 1:
@@ -2985,7 +2994,7 @@ def attn_fwd(  #
     else:
         out = out.reshape(batch, num_q_heads, seqlen_q, head_sz).permute(0, 2, 1, 3)
 
-    return out, kernel, cfg
+    return out, kernel, cfg, ms
 
 
 # ===-----------------------------------------------------------------------===#
@@ -3185,7 +3194,7 @@ def test_block_scaled_attn_fwd(q_type, kv_type, batch, seqlen_q, seqlen_k, num_q
     k_scale, k_scale_ref = create_block_scale(kv_type, batch, seqlen_k, num_k_heads, head_sz, scale_dim=3)
     v_scale, v_scale_ref = create_block_scale(kv_type, batch, seqlen_k, num_k_heads, head_sz, scale_dim=1)
 
-    o, kernel, cfg = attn_fwd(  #
+    o, kernel, cfg, _ = attn_fwd(  #
         q, k, v,  #
         q_scale, k_scale, v_scale,  #
         q_type, kv_type, True, False, pipelined, pingpong)
@@ -3263,7 +3272,7 @@ def test_global_scaled_attn_fwd(q_type, kv_type, batch, seqlen_q, seqlen_k, num_
     k_scale, k_scale_ref = create_global_scale(kv_type)
     v_scale, v_scale_ref = create_global_scale(kv_type)
 
-    o, kernel, cfg = attn_fwd(  #
+    o, kernel, cfg, _ = attn_fwd(  #
         q, k, v,  #
         q_scale, k_scale, v_scale,  #
         q_type, kv_type, False, False, pipelined, pingpong)
@@ -3329,7 +3338,7 @@ def test_global_scaled_attn_fwd(q_type, kv_type, batch, seqlen_q, seqlen_k, num_
 
 
 def run_attention(q_type, kv_type, batch, seqlen_q, seqlen_k, num_q_heads, num_k_heads, head_sz, scale_type,
-                  disable_p_scaling, pipelined, pingpong):
+                  disable_p_scaling, pipelined, pingpong, profile=False):
     q, _ = create_operand(q_type, batch, seqlen_q, num_q_heads, head_sz)
     k, _ = create_operand(kv_type, batch, seqlen_k, num_k_heads, head_sz, pack_dim=3)
     v, _ = create_operand(kv_type, batch, seqlen_k, num_k_heads, head_sz, pack_dim=1)
@@ -3343,11 +3352,48 @@ def run_attention(q_type, kv_type, batch, seqlen_q, seqlen_k, num_q_heads, num_k
         k_scale, _ = create_global_scale(kv_type)
         v_scale, _ = create_global_scale(kv_type)
 
-    _, kernel, _ = attn_fwd(  #
+    block_scaling = scale_type == 'block'
+    _, kernel, _, ms = attn_fwd(  #
         q, k, v,  #
         q_scale, k_scale, v_scale,  #
-        q_type, kv_type, scale_type == 'block', not disable_p_scaling, pipelined, pingpong)
+        q_type, kv_type, block_scaling, not disable_p_scaling, pipelined, pingpong, profile)
+
+    static_profile(kernel)
+    if profile:
+        runtime_profile(ms, q_type, kv_type, block_scaling, batch, seqlen_q, seqlen_k, num_q_heads, num_k_heads,
+                        head_sz)
     return kernel
+
+
+def runtime_profile(ms, q_type, kv_type, block_scaling, batch, seqlen_q, seqlen_k, num_q_heads, num_k_heads, head_sz):
+    assert ms is not None
+
+    flops_per_matmul = 2.0 * batch * num_q_heads * seqlen_q * seqlen_k * head_sz
+    total_flops = 2 * flops_per_matmul
+    tflops = total_flops * 1e-12 / (ms * 1e-3)
+
+    kv_pack_div = 2 if kv_type == 'e2m1' else 1
+    q_bytes = batch * seqlen_q * num_q_heads * head_sz
+    k_bytes = batch * seqlen_k * num_k_heads * (head_sz // kv_pack_div)
+    v_bytes = batch * seqlen_k * num_k_heads * (head_sz // kv_pack_div)
+    o_bytes = batch * seqlen_q * num_q_heads * head_sz * 4
+
+    scale_bytes = 0
+    if block_scaling:
+        scale_bytes += batch * seqlen_q * num_q_heads * (head_sz // 32)
+        scale_bytes += batch * seqlen_k * num_k_heads * (head_sz // 32)
+        scale_bytes += batch * num_k_heads * head_sz * (seqlen_k // 32)
+
+    total_bytes = q_bytes + k_bytes + v_bytes + o_bytes + scale_bytes
+    bandwidth_tb_s = total_bytes * 1e-12 / (ms * 1e-3)
+
+    print("\nRuntime Profile:")
+    print(f"- Average time: {ms * 1000:.2f} us")
+    print(f"- TFLOPS:      {tflops:.2f}")
+    print(f"- Bandwidth:   {bandwidth_tb_s:.4f} TB/s")
+    print("")
+
+    return ms, tflops, bandwidth_tb_s
 
 
 if __name__ == "__main__":
@@ -3371,8 +3417,7 @@ if __name__ == "__main__":
         "Only apply when block scaling is enabled. Ignored for global scaling.")
     parser.add_argument("--pipelined", action="store_true")
     parser.add_argument("--pingpong", action="store_true")
+    parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
-    args = vars(args)
 
-    kernel = run_attention(**args)
-    static_profile(kernel)
+    run_attention(**vars(args))
