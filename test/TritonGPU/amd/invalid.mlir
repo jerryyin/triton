@@ -254,6 +254,27 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
 
 // -----
 
+// Scatter with an index layout that distributes values across lanes (invalid),
+// mirroring the gather case: the warp-level TDM instruction needs lane-uniform
+// indices.
+#blocked_lane_dist = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 1], order = [1, 0]}>
+#slice_lane_dist = #ttg.slice<{dim = 1, parent = #blocked_lane_dist}>
+#shared_scatter = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem_scatter = #ttg.shared_memory
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "hip:gfx1250", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @tdm_scatter_invalid_lane_distribution(
+    %memDesc: !ttg.memdesc<32x128xf16, #shared_scatter, #smem_scatter, mutable>,
+    %tensorDesc: !tt.tensordesc<32x128xf16>,
+    %row_indices: tensor<32xi32, #slice_lane_dist>
+  ) {
+    // expected-error @+1 {{index layout distributes values across lanes}}
+    %token = amdg.async_tdm_scatter %tensorDesc[%row_indices] from %memDesc : tensor<32xi32, #slice_lane_dist>, !ttg.memdesc<32x128xf16, #shared_scatter, #smem_scatter, mutable> -> !tt.tensordesc<32x128xf16>
+    tt.return
+  }
+}
+
+// -----
+
 #linear1 = #ttg.linear<{register = [[1, 0], [2, 0], [4, 0], [8, 0]], lane = [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0]], warp = [], block = [], order = [1, 0]}>
 #slice1 = #ttg.slice<{dim = 1, parent = #linear1}>
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0], CGALayout = [[1, 0], [2, 0]]}>

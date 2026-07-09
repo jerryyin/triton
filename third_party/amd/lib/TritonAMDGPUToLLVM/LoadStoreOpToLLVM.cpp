@@ -19,6 +19,7 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/Sys/GetEnv.h"
 
 using namespace mlir;
 using namespace mlir::triton::gpu;
@@ -540,14 +541,41 @@ struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
   }
 };
 
+// readfirstlane a (wave-uniform) pointer into an SGPR pointer. Splitting to two
+// i32 halves matches readfirstlane's 32-bit operand; each half of a
+// lane-uniform value reads back identical, so this is unconditionally sound (no
+// read-only or invariant assumption). Emitted at the load site, which for the
+// gather-index load sits outside the K-loop, so the value enters the loop
+// already scalar.
+static Value readFirstLanePtr(ConversionPatternRewriter &rewriter, Location loc,
+                              Value ptr) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  Type i32 = rewriter.getI32Type();
+  Type i64 = rewriter.getI64Type();
+  auto rfl = [&](Value x) -> Value {
+    return ROCDL::ReadfirstlaneOp::create(rewriter, loc, x.getType(), x);
+  };
+  Value asI = b.ptrtoint(i64, ptr);
+  Value lo = rfl(b.trunc(i32, asI));
+  Value hi = rfl(b.trunc(i32, b.lshr(asI, b.i64_val(32))));
+  Value uni = b.or_(b.zext(i64, lo), b.shl(b.zext(i64, hi), b.i64_val(32)));
+  return b.inttoptr(ptr.getType(), uni);
+}
+
 struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
                           public LoadStoreConversionBase {
   LoadOpConversion(LLVMTypeConverter &converter,
                    const AMD::TargetInfo &targetInfo,
                    ModuleAxisInfoAnalysis &axisAnalysisPass,
+                   const llvm::DenseSet<Operation *> &uniformIndexLoads,
                    PatternBenefit benefit)
       : ConvertOpToLLVMPattern(converter, benefit),
-        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass),
+        uniformIndexLoads(uniformIndexLoads) {}
+
+  // Wave-uniform, read-only gather/scatter index loads to scalarize, computed
+  // once at the start of the ConvertToLLVM pass.
+  const llvm::DenseSet<Operation *> &uniformIndexLoads;
 
   LogicalResult
   matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
@@ -574,6 +602,68 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     // Get the LLVM values for pointers
     auto ptrElems = unpackTensorElements(loc, llPtr, rewriter, ptr.getType());
     assert(ptrElems.size() == numElems);
+
+    // Wave-uniform gather-index scalarization. A wave-uniform, read-only load
+    // feeding a TDM gather/scatter descriptor is loaded straight into SGPRs:
+    // readfirstlane each (uniform) address into an SGPR pointer and emit a
+    // scalar load. ISel selects s_load and coalesces the contiguous run into
+    // wide scalar loads -- no per-lane vector load, and the values enter the
+    // K-loop already scalar (no in-loop v_readfirstlane).
+    //
+    // Membership in `uniformIndexLoads` (the read-only, gather-index-scoped
+    // side table) is the whole trigger: the gather/scatter verifier already
+    // guarantees the index is lane-uniform, so no uniformity re-check is needed
+    // here. Masked/other loads keep the normal vector path.
+    if (uniformIndexLoads.contains(op) && !mask && !other) {
+      SmallVector<Value> loadedVals;
+      // Deliberately no !invariant.load: the readfirstlane'd uniform address
+      // alone makes ISel select s_load, and asserting invariant would be UB if
+      // the read-only proof were ever wrong. Correctness rests on the proof.
+      auto emitScalarLoad = [&](Value sPtr) {
+        loadedVals.push_back(LLVM::LoadOp::create(rewriter, loc, valueElemTy,
+                                                  sPtr, /*alignment=*/0));
+      };
+      // Layout-derived scalar addressing: readfirstlane the base (element 0)
+      // address ONCE, then GEP each element by its TRUE offset delta from the
+      // LinearLayout (register i holds tensor index t_i; delta = t_i - t_0).
+      // The register->memory order is a permutation (a naive +i is wrong), but
+      // the layout gives the exact per-register index; the warp/CTA
+      // contribution cancels in the delta. Constant deltas from one scalar base
+      // let ISel coalesce into wide s_load. Falls back to a per-element lift
+      // for non-1D.
+      auto tensorTy = dyn_cast<RankedTensorType>(valueTy);
+      if (tensorTy && tensorTy.getRank() == 1) {
+        auto ll = triton::gpu::toLinearLayout(tensorTy);
+        StringAttr kReg = rewriter.getStringAttr("register");
+        StringAttr kLane = rewriter.getStringAttr("lane");
+        StringAttr kWarp = rewriter.getStringAttr("warp");
+        StringAttr kBlock = rewriter.getStringAttr("block");
+        StringAttr outName = *ll.getOutDimNames().begin();
+        auto tIndex = [&](int i) -> int {
+          auto r = ll.apply({{kReg, i}, {kLane, 0}, {kWarp, 0}, {kBlock, 0}});
+          for (auto &kv : r)
+            if (kv.first == outName)
+              return kv.second;
+          return 0;
+        };
+        int t0 = tIndex(0);
+        Value sBase = readFirstLanePtr(rewriter, loc, ptrElems[0]);
+        for (size_t i = 0; i < numElems; ++i) {
+          int delta = tIndex(i) - t0;
+          Value sPtr = delta ? b.gep(sBase.getType(), valueElemTy, sBase,
+                                     b.i32_val(delta))
+                             : sBase;
+          emitScalarLoad(sPtr);
+        }
+      } else {
+        for (size_t i = 0; i < numElems; ++i)
+          emitScalarLoad(readFirstLanePtr(rewriter, loc, ptrElems[i]));
+      }
+      Value resultStruct = packTensorElements(loc, getTypeConverter(),
+                                              loadedVals, rewriter, valueTy);
+      rewriter.replaceOp(op, {resultStruct});
+      return success();
+    }
 
     // Get the LLVM values for mask
     SmallVector<Value> maskElems =
@@ -2676,15 +2766,18 @@ private:
 } // namespace
 
 namespace mlir::triton::AMD {
-void populateLoadStoreOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
-                                       const TargetInfo &targetInfo,
-                                       RewritePatternSet &patterns,
-                                       ModuleAxisInfoAnalysis &axisInfoAnalysis,
-                                       PatternBenefit benefit) {
-  patterns.add<AtomicCASOpConversion, AtomicRMWOpConversion, LoadOpConversion,
-               StoreOpConversion, BufferLoadOpConversion,
-               BufferLoadToLocalOpConversion, BufferStoreOpConversion,
-               BufferAtomicRMWOpConversion, AsyncCopyGlobalToLocalOpConversion,
+void populateLoadStoreOpToLLVMPatterns(
+    LLVMTypeConverter &typeConverter, const TargetInfo &targetInfo,
+    RewritePatternSet &patterns, ModuleAxisInfoAnalysis &axisInfoAnalysis,
+    const llvm::DenseSet<Operation *> &uniformIndexLoads,
+    PatternBenefit benefit) {
+  // LoadOpConversion additionally needs the uniform-index side table.
+  patterns.add<LoadOpConversion>(typeConverter, targetInfo, axisInfoAnalysis,
+                                 uniformIndexLoads, benefit);
+  patterns.add<AtomicCASOpConversion, AtomicRMWOpConversion, StoreOpConversion,
+               BufferLoadOpConversion, BufferLoadToLocalOpConversion,
+               BufferStoreOpConversion, BufferAtomicRMWOpConversion,
+               AsyncCopyGlobalToLocalOpConversion,
                AsyncCopyLocalToGlobalOpConversion, BufferAtomicCASOpConversion,
                AsyncTDMCopyGlobalToLocalOpConversion,
                AsyncTDMFusedCopyGlobalToLocalOpConversion,

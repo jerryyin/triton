@@ -5,6 +5,7 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "triton/Analysis/Allocation.h"
 #include "triton/Analysis/AxisInfo.h"
+#include "llvm/ADT/DenseSet.h"
 
 namespace mlir::triton::AMD {
 void populateConvertLayoutOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
@@ -38,11 +39,11 @@ void populateFpCastOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
 // exception handling, etc.
 void adjustModeRegister(ModuleOp mod, const TargetInfo &targetInfo);
 
-void populateLoadStoreOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
-                                       const TargetInfo &targetInfo,
-                                       RewritePatternSet &patterns,
-                                       ModuleAxisInfoAnalysis &axisInfoAnalysis,
-                                       PatternBenefit benefit);
+void populateLoadStoreOpToLLVMPatterns(
+    LLVMTypeConverter &typeConverter, const TargetInfo &targetInfo,
+    RewritePatternSet &patterns, ModuleAxisInfoAnalysis &axisInfoAnalysis,
+    const llvm::DenseSet<Operation *> &uniformIndexLoads,
+    PatternBenefit benefit);
 
 void populateSPMDOpToLLVMPattern(LLVMTypeConverter &typeConverter,
                                  RewritePatternSet &patterns,

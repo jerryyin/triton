@@ -13,6 +13,7 @@
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 #include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
@@ -29,6 +30,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonInstrument/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "triton/Tools/Sys/GetEnv.h"
 
 namespace mlir::triton {
 #define GEN_PASS_DEF_CONVERTTRITONAMDGPUTOLLVM
@@ -38,6 +40,177 @@ namespace mlir::triton {
 using namespace mlir;
 
 namespace {
+
+// --- Wave-uniform gather/scatter index scalarization ---
+// Identify a wave-uniform, read-only tt.load that feeds a TDM gather/scatter
+// row-index operand, so LoadOpConversion loads it straight into SGPRs (s_load)
+// instead of a per-lane vector load + in-loop v_readfirstlane. Computed here
+// (at the start of ConvertToLLVM, where the tt.load and the gather op still
+// coexist and pattern-application order is irrelevant) and threaded into the
+// load lowering as a side table.
+
+// Trace back to the producing tt.LoadOp through *layout-preserving* ops only
+// (bitcast + integer-elementwise arith). We deliberately do NOT cross
+// ConvertLayoutOp: staying layout-preserving means the load shares the gather
+// index's encoding, so the gather/scatter verifier's lane-uniform guarantee on
+// the index carries to the load — no separate uniformity check needed.
+static triton::LoadOp traceToProducingLoad(Value v, int depth = 8) {
+  if (depth < 0 || !v)
+    return nullptr;
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return nullptr;
+  if (auto ld = dyn_cast<triton::LoadOp>(def))
+    return ld;
+  if (isa<triton::BitcastOp, arith::DivSIOp, arith::DivUIOp, arith::RemSIOp,
+          arith::RemUIOp, arith::AddIOp, arith::SubIOp, arith::MulIOp,
+          arith::TruncIOp, arith::ExtSIOp, arith::ExtUIOp, arith::AndIOp,
+          arith::OrIOp>(def)) {
+    for (Value operand : def->getOperands()) {
+      if (!isa<RankedTensorType>(operand.getType()))
+        continue;
+      if (auto ld = traceToProducingLoad(operand, depth - 1))
+        return ld;
+    }
+  }
+  return nullptr;
+}
+
+// Trace a pointer to its base value (ideally a kernel-arg BlockArgument).
+static Value traceToBasePtr(Value ptr) {
+  while (ptr) {
+    Operation *def = ptr.getDefiningOp();
+    if (!def)
+      break;
+    if (auto ap = dyn_cast<triton::AddPtrOp>(def)) {
+      ptr = ap.getPtr();
+      continue;
+    }
+    if (auto sp = dyn_cast<triton::SplatOp>(def)) {
+      ptr = sp.getSrc();
+      continue;
+    }
+    if (auto bc = dyn_cast<triton::BitcastOp>(def)) {
+      ptr = bc.getSrc();
+      continue;
+    }
+    break;
+  }
+  return ptr;
+}
+
+static bool isPtrOrDescType(Type t) {
+  return isa<triton::TensorDescType>(t) ||
+         isa<triton::PointerType>(getElementTypeOrSelf(t));
+}
+
+// Resolve the base object a global write targets. The target is either a
+// (tensor of) pointer or a tensor descriptor; reduce it to its base pointer.
+// Descriptor chains (update_tensor_descriptor -> ... -> make_tensor_descriptor)
+// are traced to the make's base.
+static Value resolveWriteBase(Value written) {
+  while (written && isa<triton::TensorDescType>(written.getType())) {
+    Operation *def = written.getDefiningOp();
+    if (auto mk = dyn_cast_or_null<triton::MakeTensorDescOp>(def))
+      return traceToBasePtr(mk.getBase());
+    if (auto up =
+            dyn_cast_or_null<triton::amdgpu::UpdateTensorDescriptorOp>(def)) {
+      written = up.getDesc();
+      continue;
+    }
+    return {}; // unknown descriptor source
+  }
+  if (!written)
+    return {};
+  return traceToBasePtr(written);
+}
+
+// Read-only iff `base` is a kernel-arg BlockArgument and no op in the function
+// writes global memory to a location that may alias it. Global writes are
+// discovered generically via the MemoryEffectOpInterface (so all writing ops --
+// tt.store, atomics, descriptor_store, async_tdm_copy_local_to_global,
+// async_tdm_scatter, and any future one -- are covered), filtered to the
+// GlobalMemory resource (shared-memory writes are irrelevant). Some ops declare
+// the write effect without pinning a value (e.g. the TDM copy-to-global reports
+// a bare GlobalMemory write); for those we fall back to the op's own
+// pointer/descriptor operands as the write targets. Aliasing is conservative: a
+// write to a *distinct* kernel argument is assumed disjoint (the standard
+// no-alias-across-args convention), but a write to the same base, or to a base
+// we cannot resolve to a distinct argument, forfeits read-only.
+static bool baseIsReadOnly(Value base, Operation *funcScope) {
+  if (!isa<BlockArgument>(base))
+    return false;
+  bool readOnly = true;
+  funcScope->walk([&](Operation *op) {
+    auto effOp = dyn_cast<MemoryEffectOpInterface>(op);
+    if (!effOp)
+      return;
+    SmallVector<MemoryEffects::EffectInstance> effects;
+    effOp.getEffects(effects);
+    for (const auto &eff : effects) {
+      if (!isa<MemoryEffects::Write>(eff.getEffect()))
+        continue;
+      if (eff.getResource() != mlir::triton::GlobalMemory::get())
+        continue;
+      SmallVector<Value, 2> targets;
+      if (Value v = eff.getValue())
+        targets.push_back(v);
+      else
+        for (Value o : op->getOperands())
+          if (isPtrOrDescType(o.getType()))
+            targets.push_back(o);
+      // A global write exposing neither a pinned value nor a ptr/desc operand
+      // is unanalyzable -> conservatively writable.
+      if (targets.empty())
+        readOnly = false;
+      for (Value t : targets) {
+        Value wbase = resolveWriteBase(t);
+        // Provably-distinct kernel argument => assumed disjoint. Otherwise
+        // (same base, unresolved, or not an argument) => conservatively
+        // writable.
+        if (!wbase || !isa<BlockArgument>(wbase) || wbase == base)
+          readOnly = false;
+      }
+    }
+  });
+  return readOnly;
+}
+
+// Collect the read-only tt.load ops that feed a TDM gather/scatter row-index
+// operand. The index is already lane-uniform by construction: AsyncTDMGatherOp
+// / AsyncTDMScatterOp::verify() reject any index layout that distributes values
+// across lanes, and traceToProducingLoad only walks layout-preserving ops, so
+// the load shares that lane-uniform layout. Uniformity therefore needs no
+// re-check here; read-only is the remaining condition. Returned as a side table
+// (threaded into LoadOpConversion) rather than an IR attribute -- no IR
+// mutation, and it cannot be dropped by a later rewrite. The op pointers are
+// stable: dialect conversion hands the original op to matchAndRewrite and
+// replaces it via the rewriter.
+static llvm::DenseSet<Operation *>
+collectUniformGatherIndexLoads(ModuleOp mod) {
+  llvm::DenseSet<Operation *> result;
+  if (::triton::tools::getBoolEnv("TRITON_AMD_DISABLE_UNIFORM_SLOAD"))
+    return result;
+  mod.walk([&](Operation *op) {
+    Value idx;
+    if (auto g = dyn_cast<triton::amdgpu::AsyncTDMGatherOp>(op))
+      idx = g.getSrcRowIndices();
+    else if (auto s = dyn_cast<triton::amdgpu::AsyncTDMScatterOp>(op))
+      idx = s.getDstRowIndices();
+    else
+      return;
+    triton::LoadOp ld = traceToProducingLoad(idx);
+    if (!ld)
+      return;
+    Operation *func = ld->getParentOfType<FunctionOpInterface>();
+    if (!func)
+      func = mod;
+    if (!baseIsReadOnly(traceToBasePtr(ld.getPtr()), func))
+      return;
+    result.insert(ld.getOperation());
+  });
+  return result;
+}
 
 class TritonLLVMFunctionConversionTarget : public ConversionTarget {
 public:
@@ -88,6 +261,11 @@ struct ConvertTritonAMDGPUToLLVM
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
+
+    // Collect wave-uniform, read-only gather/scatter index loads, threaded into
+    // the load lowering below as a side table.
+    llvm::DenseSet<Operation *> uniformIndexLoads =
+        collectUniformGatherIndexLoads(mod);
 
     AMD::TargetInfo targetInfo(this->gfxArch.getValue());
     if (targetInfo.getISAFamily() == triton::amdgpu::ISAFamily::Unknown) {
@@ -176,7 +354,8 @@ struct ConvertTritonAMDGPUToLLVM
                                         axisInfoAnalysis, allocation,
                                         targetInfo, AMDBenefit);
     AMD::populateLoadStoreOpToLLVMPatterns(typeConverter, targetInfo, patterns,
-                                           axisInfoAnalysis, AMDBenefit);
+                                           axisInfoAnalysis, uniformIndexLoads,
+                                           AMDBenefit);
     AMD::populateMaskedOpsToLLVMPatterns(patterns, targetInfo);
     AMD::populateBarrierOpToLLVMPatterns(typeConverter, patterns, AMDBenefit);
     AMD::populateTensorPtrOpsToLLVMPatterns(typeConverter, patterns,
