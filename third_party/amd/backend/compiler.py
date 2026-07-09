@@ -461,16 +461,13 @@ class HIPBackend(BaseBackend):
             total_warps_num = total_num_warps
         kernel_fn.add_fn_attr("amdgpu-flat-work-group-size", f"1,{total_warps_num*options.warp_size}")
         kernel_fn.add_fn_attr("uniform-work-group-size", "true")
-        # LLVM AMDGPU backend supports the attribute "amdgpu-waves-per-eu"="<min>[, <max>]".
-        # This attribute may be attached to a kernel function definition and is an optimization hint.
-        # <min> parameter specifies the requested minimum number of waves per EU, and optional <max> parameter
-        # specifies the requested maximum number of waves per EU (must be >= <min> if specified).
-        # If <max> is omitted, then there is no restriction on the maximum number of waves per EU other than
-        # the one dictated by the hardware for which the kernel is compiled. Passing 0, 0 as <min>, <max>
-        # implies the default behavior (no limits).
-        # Specifying N, N forces LLVM to focus on a single register count, simplifies some heuristics
-        # and may improve scheduling.
-        kernel_fn.add_fn_attr("amdgpu-waves-per-eu", f"{options.waves_per_eu}, {options.waves_per_eu}")
+        # "amdgpu-waves-per-eu"="<min>[,<max>]" allows controlling the minimal and (optional)
+        # maximal number of waves per SIMD. If <max> is omitted, then no restriction other than
+        # whatever allowed by the hardware for occupancy.
+        # Specifying "N,N" forces LLVM to focus on a single register budget, simplifies some
+        # heuristics and may improve scheduling.
+        if options.waves_per_eu != 0:
+            kernel_fn.add_fn_attr("amdgpu-waves-per-eu", f"{options.waves_per_eu},{options.waves_per_eu}")
 
         if is_coexec_scheduler_enabled(options.arch) and options.num_warps <= 4:
             kernel_fn.add_fn_attr("amdgpu-sched-strategy", "coexec")
