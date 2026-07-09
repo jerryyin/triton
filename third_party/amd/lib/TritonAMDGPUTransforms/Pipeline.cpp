@@ -190,17 +190,13 @@ void combineWaitOps(ModuleOp moduleOp, bool useAsyncCopy) {
       });
 }
 
-// The InsertClusterSync() and its helper function is to
-//  - insert clusterArriveOp at very beginning of the loop body
-//  - insert clusterWaitOp at the very end of loop body.
+// The InsertClusterSync() and its helper function inserts a cluster barrier at
+// the beginning of the loop body.
 //
 // The purpose of these two operations is to make all CTAs in the cluster run
 // about the same pace as all CTAs sync per iteration. By doing so, all CTAs
 // make load requests about the same time and render it possible for hardware
 // to multicast duplicated loads.
-//
-// These two operations need to be sufficiently separated as clusterArriveOp
-// may take a while to send its signal to its peer CTAs.
 //
 // TODO: We may need multiple pairs of arrive/wait if the loop body is big.
 //
@@ -210,11 +206,10 @@ void InsertClusterSyncIntoLoop(scf::ForOp loop) {
   mlir::Block *loopBody = loop.getBody();
   mlir::Operation &firstOp = loopBody->front();
   builder.setInsertionPoint(&firstOp);
-  triton::amdgpu::ClusterBarrierArriveOp::create(builder, firstOp.getLoc());
-
-  auto terminator = loopBody->getTerminator();
-  builder.setInsertionPoint(terminator);
-  triton::amdgpu::ClusterBarrierWaitOp::create(builder, terminator->getLoc());
+  auto arrive =
+      triton::amdgpu::ClusterBarrierArriveOp::create(builder, firstOp.getLoc());
+  builder.setInsertionPointAfter(arrive);
+  triton::amdgpu::ClusterBarrierWaitOp::create(builder, firstOp.getLoc());
 }
 
 void InsertClusterSync(ModuleOp mod) {

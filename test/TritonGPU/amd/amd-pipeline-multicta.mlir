@@ -3,9 +3,9 @@
 // CHECK-LABEL: cluster_sync_loop1
 // CHECK: scf.for
 // CHECK: amdg.cluster_barrier_arrive
+// CHECK-NEXT: amdg.cluster_barrier_wait
 // CHECK: tt.load
 // CHECK: tt.store
-// CHECK: amdg.cluster_barrier_wait
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [8, 4], warpsPerCTA = [8, 1], order = [1, 0], CGALayout = [[0, 0], [1, 0]]}>
 module attributes {"ttg.num-ctas" = 4 : i32, "ttg.num-warps" = 8 : i32, ttg.target = "hip:gfx1250", "ttg.threads-per-warp" = 32 : i32} {
