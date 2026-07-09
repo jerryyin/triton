@@ -19,6 +19,7 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/Sys/GetEnv.h"
 
 using namespace mlir;
 using namespace mlir::triton::gpu;
@@ -540,6 +541,139 @@ struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
   }
 };
 
+// readfirstlane a wave-uniform pointer into an SGPR pointer, via two i32
+// halves.
+static Value readFirstLanePtr(ConversionPatternRewriter &rewriter, Location loc,
+                              Value ptr) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  Type i32 = rewriter.getI32Type();
+  Type i64 = rewriter.getI64Type();
+  auto rfl = [&](Value x) -> Value {
+    return ROCDL::ReadfirstlaneOp::create(rewriter, loc, x.getType(), x);
+  };
+  Value asI = b.ptrtoint(i64, ptr);
+  Value lo = rfl(b.trunc(i32, asI));
+  Value hi = rfl(b.trunc(i32, b.lshr(asI, b.i64_val(32))));
+  Value uni = b.or_(b.zext(i64, lo), b.shl(b.zext(i64, hi), b.i64_val(32)));
+  return b.inttoptr(ptr.getType(), uni);
+}
+
+// readfirstlane an integer into an SGPR (i32: one readfirstlane; narrower:
+// zext->i32; i64: split into two i32 halves).
+static Value readFirstLaneInt(ConversionPatternRewriter &rewriter, Location loc,
+                              Value v) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  Type i32 = rewriter.getI32Type();
+  auto rfl = [&](Value x) -> Value {
+    return ROCDL::ReadfirstlaneOp::create(rewriter, loc, x.getType(), x);
+  };
+  Type ty = v.getType();
+  unsigned bw = ty.getIntOrFloatBitWidth();
+  if (bw == 32)
+    return rfl(v);
+  if (bw < 32)
+    return b.trunc(ty, rfl(b.zext(i32, v)));
+  Value lo = rfl(b.trunc(i32, v));
+  Value hi = rfl(b.trunc(i32, b.lshr(v, b.i64_val(32))));
+  return b.or_(b.zext(ty, lo), b.shl(b.zext(ty, hi), b.i64_val(32)));
+}
+
+// Make a wave-uniform address from a lane-replicated per-lane address:
+// readfirstlane the shared GEP base only ONCE (via `baseCache`) and the
+// per-element offset as a narrow integer. Falls back to a whole-pointer
+// readfirstlane when the address isn't a single-dynamic-index GEP.
+static Value uniformizeAddr(ConversionPatternRewriter &rewriter, Location loc,
+                            Value ptr, Type elemTy,
+                            llvm::DenseMap<Value, Value> &baseCache) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  auto gep = ptr.getDefiningOp<LLVM::GEPOp>();
+  if (!gep || gep.getDynamicIndices().size() != 1)
+    return readFirstLanePtr(rewriter, loc, ptr);
+  Value base = gep.getBase();
+  Value &uBase = baseCache[base];
+  if (!uBase)
+    uBase = readFirstLanePtr(rewriter, loc, base);
+  Value idx = gep.getDynamicIndices()[0];
+  Value src = idx;
+  bool sext = false, zext = false;
+  if (auto s = idx.getDefiningOp<LLVM::SExtOp>()) {
+    src = s.getArg();
+    sext = true;
+  } else if (auto z = idx.getDefiningOp<LLVM::ZExtOp>()) {
+    src = z.getArg();
+    zext = true;
+  }
+  Value uSrc = readFirstLaneInt(rewriter, loc, src);
+  Value uIdx = sext   ? b.sext(idx.getType(), uSrc)
+               : zext ? b.zext(idx.getType(), uSrc)
+                      : uSrc;
+  return b.gep(ptr.getType(), elemTy, uBase, uIdx);
+}
+
+// True if the load's result layout is lane-uniform (the `lane` dim is free).
+static bool isWaveUniformTensorLoad(triton::LoadOp op) {
+  auto tensorTy = dyn_cast<RankedTensorType>(op.getType());
+  if (!tensorTy)
+    return false;
+  auto ll = triton::gpu::toLinearLayout(tensorTy);
+  StringAttr kLane = StringAttr::get(op.getContext(), "lane");
+  int64_t laneSize = ll.getInDimSize(kLane);
+  int32_t laneMask = ll.getFreeVariableMasks().lookup(kLane);
+  return laneSize > 1 && laneMask == static_cast<int32_t>(laneSize - 1);
+}
+
+// Trace a pointer to its base through addptr/splat/bitcast, and through the
+// unrealized_conversion_cast signature conversion inserts on kernel args. Any
+// other producer ends the walk fail-safe (base won't be a kernel-arg -> bail).
+static Value traceToBasePtr(Value ptr) {
+  while (ptr) {
+    Operation *def = ptr.getDefiningOp();
+    if (!def)
+      break;
+    if (auto ap = dyn_cast<triton::AddPtrOp>(def)) {
+      ptr = ap.getPtr();
+      continue;
+    }
+    if (auto sp = dyn_cast<triton::SplatOp>(def)) {
+      ptr = sp.getSrc();
+      continue;
+    }
+    if (auto bc = dyn_cast<triton::BitcastOp>(def)) {
+      ptr = bc.getSrc();
+      continue;
+    }
+    if (auto cast = dyn_cast<mlir::UnrealizedConversionCastOp>(def)) {
+      if (cast.getInputs().size() == 1) {
+        ptr = cast.getInputs()[0];
+        continue;
+      }
+    }
+    break;
+  }
+  return ptr;
+}
+
+// True iff `base` is a kernel argument carrying the tt.readonly + tt.noalias
+// caller contract (lowered to LLVM readonly/noalias by
+// handlePointerContractArgs)
+// -- what makes the scalar-cache s_load sound. Read from the load's enclosing
+// function (attrs survive onto the converted llvm.func, arg numbering
+// preserved), so it is robust to func/load conversion order.
+static bool baseIsReadOnly(Value base, Operation *loadOp) {
+  auto blockArg = dyn_cast<BlockArgument>(base);
+  if (!blockArg)
+    return false;
+  // Kernel argument (function entry-block arg), not e.g. an scf.for iter-arg.
+  if (!isa_and_nonnull<FunctionOpInterface>(blockArg.getOwner()->getParentOp()))
+    return false;
+  auto func = loadOp->getParentOfType<FunctionOpInterface>();
+  unsigned argNo = blockArg.getArgNumber();
+  if (!func || argNo >= func.getNumArguments())
+    return false;
+  return func.getArgAttr(argNo, "tt.readonly") &&
+         func.getArgAttr(argNo, "tt.noalias");
+}
+
 struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
                           public LoadStoreConversionBase {
   LoadOpConversion(LLVMTypeConverter &converter,
@@ -574,6 +708,19 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     // Get the LLVM values for pointers
     auto ptrElems = unpackTensorElements(loc, llPtr, rewriter, ptr.getType());
     assert(ptrElems.size() == numElems);
+
+    // A wave-uniform, contract-read-only load with a readfirstlane'd (SGPR)
+    // address + !invariant.load is selected by ISel as a scalar s_load, keeping
+    // the result uniform through downstream consumers (e.g. the TDM gather
+    // descriptor) with no in-loop v_readfirstlane. Both the uniform address and
+    // !invariant.load are required. Kill switch:
+    // TRITON_AMD_DISABLE_UNIFORM_SLOAD.
+    bool doScalarLoad =
+        !::triton::tools::getBoolEnv("TRITON_AMD_DISABLE_UNIFORM_SLOAD") &&
+        isWaveUniformTensorLoad(op) && baseIsReadOnly(traceToBasePtr(ptr), op);
+    bool tryUniformSLoad = doScalarLoad && !mask && !other;
+    // Cache the readfirstlane of each shared GEP base so it is lifted once.
+    llvm::DenseMap<Value, Value> uBaseCache;
 
     // Get the LLVM values for mask
     SmallVector<Value> maskElems =
@@ -620,8 +767,18 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
             rewriter, this->getTypeConverter(), loc, cast<VectorType>(vecTy),
             otherElems, vecStart);
 
-      Value loadVal = llLoad(rewriter, loc, ptr, vecTy, pred, falseVal,
-                             multicastMask, cacheMod);
+      Value loadVal;
+      if (tryUniformSLoad) {
+        Value uAddr =
+            uniformizeAddr(rewriter, loc, ptr, valueElemTy, uBaseCache);
+        auto ld = LLVM::LoadOp::create(rewriter, loc, vecTy, uAddr,
+                                       /*alignment=*/0);
+        ld.setInvariant(true);
+        loadVal = ld.getResult();
+      } else {
+        loadVal = llLoad(rewriter, loc, ptr, vecTy, pred, falseVal,
+                         multicastMask, cacheMod);
+      }
       for (size_t ii = 0; ii < vec; ++ii) {
         Value vecIdx = createIndexAttrConstant(
             rewriter, loc, getTypeConverter()->getIndexType(), ii);
